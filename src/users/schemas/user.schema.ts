@@ -1,21 +1,61 @@
-// src/users/schemas/user.schema.ts
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import * as bcrypt from 'bcrypt'; // 1. Import bcrypt
 
-// Export kiểu Document để có thể dùng trong service
 export type UserDocument = HydratedDocument<User>;
 
-@Schema() // Đánh dấu đây là một Schema
+@Schema({
+  // 2. Thêm timestamps và toJSON/toObject
+  timestamps: true,
+  toJSON: {
+    virtuals: true,
+    transform: function (doc, ret: any) {
+      // Xóa password và hashedRefreshToken khỏi kết quả JSON trả về
+      delete ret.password;
+      delete ret.hashedRefreshToken;
+      delete ret._id; // (Tùy chọn, nếu bạn dùng virtual 'id')
+      delete ret.__v;
+      return ret;
+    },
+  },
+  toObject: {
+    virtuals: true,
+    transform: function (doc, ret: any) {
+      delete ret.password;
+      delete ret.hashedRefreshToken;
+      delete ret._id;
+      delete ret.__v;
+      return ret;
+    },
+  },
+})
 export class User {
-  @Prop({ required: true, unique: true }) // Đánh dấu là 1 trường (property)
+  @Prop({ required: true, unique: true })
   username: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, unique: true }) // Thêm unique cho email
   email: string;
 
   @Prop({ required: true })
-  password: string; // Lưu ý: Thực tế nên băm (hash) mật khẩu này
+  password: string;
+
+  // 3. Thêm trường lưu refresh token đã băm
+  @Prop({ required: false }) // Không bắt buộc
+  hashedRefreshToken?: string;
 }
 
-// Tạo Schema thực tế từ Class
 export const UserSchema = SchemaFactory.createForClass(User);
+
+// 4. Thêm Mongoose Hook (pre-save)
+// Cái này sẽ tự động chạy TRƯỚC KHI .save()
+UserSchema.pre<UserDocument>('save', async function (next) {
+  // Chỉ băm mật khẩu nếu nó vừa được thay đổi (hoặc là user mới)
+  if (!this.isModified('password')) {
+    return next();
+  }
+
+  // Băm mật khẩu
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});

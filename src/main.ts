@@ -5,6 +5,11 @@ import { ValidationPipe } from '@nestjs/common';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useGlobalPipes(new ValidationPipe()); // Sử dụng ValidationPipe toàn cục
+
+  app.enableCors({
+    origin: 'http://localhost:3000', // URL của frontend Next.js của bạn
+    credentials: true,
+  });
   await app.listen(process.env.PORT ?? 3001);
 }
 bootstrap();
