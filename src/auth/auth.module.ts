@@ -7,6 +7,7 @@ import { JwtModule } from '@nestjs/jwt'; // 2. Import JwtModule
 import { ConfigModule, ConfigService } from '@nestjs/config'; // 3. Import Config
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './jwt.strategy'; // Chúng ta sẽ tạo ở bước 5
+import { GoogleStrategy } from './google.strategy';
 
 @Module({
   imports: [
@@ -23,6 +24,6 @@ import { JwtStrategy } from './jwt.strategy'; // Chúng ta sẽ tạo ở bướ
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy], // 7. Thêm JwtStrategy
+  providers: [AuthService, JwtStrategy, GoogleStrategy], // 7. Thêm JwtStrategy
 })
 export class AuthModule {}

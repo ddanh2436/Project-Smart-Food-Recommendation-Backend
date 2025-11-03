@@ -1,10 +1,12 @@
 // src/auth/auth.controller.ts
-import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Req, Get, Res } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './jwt-auth.guard'; // Sẽ tạo ở bước 5
 import { Request } from 'express';
+import { AuthGuard } from '@nestjs/passport'; // <-- Import AuthGuard
+import type { Response } from 'express'; // <-- Import Responsez
 
 // Interface để thêm 'user' vào Request (từ Guard)
 interface RequestWithUser extends Request {
@@ -17,6 +19,24 @@ interface RequestWithUser extends Request {
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
+
+  @Get('google')
+  @UseGuards(AuthGuard('google'))
+  async googleAuth(@Req() req) {
+    // Passport-google sẽ tự động chuyển hướng đến Google
+  }
+
+  @Get('google/callback')
+  @UseGuards(AuthGuard('google'))
+  async googleAuthRedirect(@Req() req, @Res() res: Response) {
+    // 'req.user' lúc này là đối tượng 'user' từ GoogleStrategy
+    const { accessToken, refreshToken } = await this.authService.signInWithGoogle(req.user);
+    
+    // Chuyển hướng người dùng về Frontend, đính kèm token
+    // (Bạn nên lưu URL frontend trong .env)
+    const frontendUrl = 'http://localhost:3000/auth/callback';
+    res.redirect(`${frontendUrl}?accessToken=${accessToken}&refreshToken=${refreshToken}`);
+  }
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)

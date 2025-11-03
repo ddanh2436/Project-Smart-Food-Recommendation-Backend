@@ -130,4 +130,37 @@ export class AuthService {
 
     return { accessToken, refreshToken };
   }
+
+  async signInWithGoogle(googleUser: { email: string; firstName: string; lastName: string; }) {
+    if (!googleUser) {
+      throw new BadRequestException('Unauthenticated');
+    }
+
+    let user: UserDocument;
+    
+    try {
+      // 1. Thử tìm user bằng email
+      user = await this.usersService.findOneByEmail(googleUser.email);
+    } catch (error) {
+      // 2. Nếu không tìm thấy (NotFoundException), thì tạo user mới
+      if (error.status === 404) {
+        user = await this.usersService.create({
+          email: googleUser.email,
+          username: `${googleUser.firstName}${googleUser.lastName}`.toLowerCase(),
+          // Mật khẩu có thể để ngẫu nhiên hoặc null, vì họ sẽ không dùng
+          password: Math.random().toString(36).substring(7), 
+        });
+      } else {
+        throw error;
+      }
+    }
+    
+    // 3. Tạo JWT (của ứng dụng)
+    const tokens = await this._generateTokens(user._id.toString(), user.email);
+    
+    // 4. Cập nhật refresh token
+    await this.usersService.updateRefreshToken(user._id.toString(), tokens.refreshToken);
+    
+    return tokens;
+  }
 }
