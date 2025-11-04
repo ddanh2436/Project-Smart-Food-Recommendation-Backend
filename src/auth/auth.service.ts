@@ -12,6 +12,7 @@ import * as bcrypt from 'bcrypt';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { UserDocument } from 'src/users/schemas/user.schema'; // Import thêm UserDocument
+import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
 @Injectable()
 export class AuthService {
@@ -179,5 +180,10 @@ export class AuthService {
     // Schema sẽ tự động xóa password và refreshToken
     const user = await this.usersService.findOne(userId);
     return user;
+  }
+
+  async updateProfile(userId: string, updateUserDto: UpdateUserDto) {
+    // Chúng ta chỉ gọi hàm từ UsersService
+    return this.usersService.updateProfile(userId, updateUserDto);
   }
 }

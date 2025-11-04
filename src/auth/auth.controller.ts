@@ -9,14 +9,16 @@ import {
   Req,
   Get,
   Res,
+  Patch,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from './jwt-auth.guard'; // Sẽ tạo ở bước 5
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { Request } from 'express';
-import { AuthGuard } from '@nestjs/passport'; // <-- Import AuthGuard
-import type { Response } from 'express'; // <-- Import Responsez
+import { AuthGuard } from '@nestjs/passport';
+import type { Response } from 'express';
+import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
 // Interface để thêm 'user' vào Request (từ Guard)
 interface RequestWithUser extends Request {
@@ -29,6 +31,9 @@ interface RequestWithUser extends Request {
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
+
+  // ... (Các route Google, register, login, logout, refresh của bạn ở đây...)
+  // ... (Giữ nguyên các hàm đó) ...
 
   @Get('google')
   @UseGuards(AuthGuard('google'))
@@ -44,8 +49,7 @@ export class AuthController {
       await this.authService.signInWithGoogle(req.user);
 
     // Chuyển hướng người dùng về Frontend, đính kèm token
-    // (Bạn nên lưu URL frontend trong .env)
-    const frontendUrl = 'http://localhost:3000/auth/callback';
+    const frontendUrl = 'http://localhost:3000/auth/callback'; // Sửa port FE nếu cần
     res.redirect(
       `${frontendUrl}?accessToken=${accessToken}&refreshToken=${refreshToken}`,
     );
@@ -54,7 +58,6 @@ export class AuthController {
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   register(@Body() registerDto: RegisterDto) {
-    // Lưu ý: create
     return this.authService.register(registerDto);
   }
 
@@ -64,29 +67,38 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
-  @UseGuards(JwtAuthGuard) // <-- Bảo vệ route này
+  @UseGuards(JwtAuthGuard)
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Req() req: RequestWithUser) {
-    // Lấy userId từ token đã được xác thực (gắn vào req bởi Guard)
     const userId = req.user.sub;
     return this.authService.logout(userId);
   }
 
-  // Tạm thời chúng ta sẽ để route này đơn giản
-  // Thực tế, bạn nên dùng RefreshTokenGuard riêng
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   refresh(@Body() body: { userId: string; refreshToken: string }) {
     return this.authService.refresh(body.userId, body.refreshToken);
   }
 
-  // Ví dụ về route được bảo vệ
+  // --- THÊM HÀM NÀY VÀO (ĐÂY LÀ PHẦN BỊ THIẾU) ---
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   getProfile(@Req() req: RequestWithUser) {
-    // req.user chứa { sub: userId, email } từ JwtStrategy
     const userId = req.user.sub;
-    return this.authService.getProfile(userId); // 2. Gọi service
+    // Đảm bảo bạn đã có hàm getProfile trong auth.service.ts
+    return this.authService.getProfile(userId);
+  }
+  // -------------------------------------------------
+
+  // --- HÀM UPDATE CỦA BẠN (ĐÃ ĐÚNG) ---
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile')
+  updateProfile(
+    @Req() req: RequestWithUser,
+    @Body() updateUserDto: UpdateUserDto,
+  ) {
+    const userId = req.user.sub;
+    return this.authService.updateProfile(userId, updateUserDto);
   }
 }

@@ -77,4 +77,19 @@ export class UsersService {
       hashedRefreshToken: refreshToken,
     });
   }
+
+  async updateProfile(userId: string, updateUserDto: UpdateUserDto): Promise<User> {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      throw new NotFoundException(`Invalid ID format`);
+    }
+    
+    const updatedUser = await this.userModel
+      .findByIdAndUpdate(userId, updateUserDto, { new: true }) // { new: true } để trả về data MỚI
+      .exec();
+      
+    if (!updatedUser) {
+      throw new NotFoundException(`User #${userId} not found`);
+    }
+    return updatedUser;
+  }
 }

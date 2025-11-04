@@ -49,12 +49,22 @@ export class User {
 
   @Prop({ required: false })
   lastName: string;
+
+  @Prop({ required: false })
+  phone?: string;
+
+  @Prop({ required: false })
+  company?: string;
+
+  @Prop({ required: false })
+  designation?: string; // Chức vụ
+
+  @Prop({ required: false })
+  bio?: string; // Tiểu sử
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
 
-// 4. Thêm Mongoose Hook (pre-save)
-// Cái này sẽ tự động chạy TRƯỚC KHI .save()
 UserSchema.pre<UserDocument>('save', async function (next) {
   // Chỉ băm mật khẩu nếu nó vừa được thay đổi (hoặc là user mới)
   if (!this.isModified('password')) {
