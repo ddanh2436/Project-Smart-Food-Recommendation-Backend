@@ -41,7 +41,14 @@ export class User {
 
   // 3. Thêm trường lưu refresh token đã băm
   @Prop({ required: false }) // Không bắt buộc
+  picture?: string;
   hashedRefreshToken?: string;
+
+  @Prop({ required: false })
+  firstName: string;
+
+  @Prop({ required: false })
+  lastName: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

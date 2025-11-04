@@ -131,13 +131,18 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  async signInWithGoogle(googleUser: { email: string; firstName: string; lastName: string; }) {
+  async signInWithGoogle(googleUser: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    picture?: string;
+  }) {
     if (!googleUser) {
       throw new BadRequestException('Unauthenticated');
     }
 
     let user: UserDocument;
-    
+
     try {
       // 1. Thử tìm user bằng email
       user = await this.usersService.findOneByEmail(googleUser.email);
@@ -146,21 +151,33 @@ export class AuthService {
       if (error.status === 404) {
         user = await this.usersService.create({
           email: googleUser.email,
-          username: `${googleUser.firstName}${googleUser.lastName}`.toLowerCase(),
-          // Mật khẩu có thể để ngẫu nhiên hoặc null, vì họ sẽ không dùng
-          password: Math.random().toString(36).substring(7), 
+          username: googleUser.email.split('@')[0], // Username chuẩn
+          firstName: googleUser.firstName, // Lưu tên
+          lastName: googleUser.lastName, // Lưu họ
+          picture: googleUser.picture,
+          password: Math.random().toString(36).substring(7),
         });
       } else {
         throw error;
       }
     }
-    
+
     // 3. Tạo JWT (của ứng dụng)
     const tokens = await this._generateTokens(user._id.toString(), user.email);
-    
+
     // 4. Cập nhật refresh token
-    await this.usersService.updateRefreshToken(user._id.toString(), tokens.refreshToken);
-    
+    await this.usersService.updateRefreshToken(
+      user._id.toString(),
+      tokens.refreshToken,
+    );
+
     return tokens;
+  }
+
+  async getProfile(userId: string) {
+    // Hàm findOne của UsersService là hoàn hảo cho việc này
+    // Schema sẽ tự động xóa password và refreshToken
+    const user = await this.usersService.findOne(userId);
+    return user;
   }
 }

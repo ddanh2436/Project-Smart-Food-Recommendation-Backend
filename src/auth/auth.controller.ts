@@ -1,5 +1,15 @@
 // src/auth/auth.controller.ts
-import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Req, Get, Res } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+  Req,
+  Get,
+  Res,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -30,12 +40,15 @@ export class AuthController {
   @UseGuards(AuthGuard('google'))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
     // 'req.user' lúc này là đối tượng 'user' từ GoogleStrategy
-    const { accessToken, refreshToken } = await this.authService.signInWithGoogle(req.user);
-    
+    const { accessToken, refreshToken } =
+      await this.authService.signInWithGoogle(req.user);
+
     // Chuyển hướng người dùng về Frontend, đính kèm token
     // (Bạn nên lưu URL frontend trong .env)
     const frontendUrl = 'http://localhost:3000/auth/callback';
-    res.redirect(`${frontendUrl}?accessToken=${accessToken}&refreshToken=${refreshToken}`);
+    res.redirect(
+      `${frontendUrl}?accessToken=${accessToken}&refreshToken=${refreshToken}`,
+    );
   }
 
   @Post('register')
@@ -64,14 +77,16 @@ export class AuthController {
   // Thực tế, bạn nên dùng RefreshTokenGuard riêng
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(@Body() body: { userId: string, refreshToken: string }) {
+  refresh(@Body() body: { userId: string; refreshToken: string }) {
     return this.authService.refresh(body.userId, body.refreshToken);
   }
 
   // Ví dụ về route được bảo vệ
   @UseGuards(JwtAuthGuard)
-  @Post('profile')
+  @Get('profile')
   getProfile(@Req() req: RequestWithUser) {
-    return req.user; // Trả về thông tin user từ payload của token
+    // req.user chứa { sub: userId, email } từ JwtStrategy
+    const userId = req.user.sub;
+    return this.authService.getProfile(userId); // 2. Gọi service
   }
 }

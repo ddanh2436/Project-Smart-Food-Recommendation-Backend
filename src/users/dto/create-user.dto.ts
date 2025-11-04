@@ -1,8 +1,13 @@
 // src/users/dto/create-user.dto.ts
 
-// Chúng ta sẽ dùng class-validator để xác thực dữ liệu
-// Chạy: npm install class-validator class-transformer
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsString,
+  MinLength,
+  IsOptional,
+  IsUrl,
+} from 'class-validator'; // 1. Thêm IsOptional, IsUrl
 
 export class CreateUserDto {
   @IsString()
@@ -17,4 +22,13 @@ export class CreateUserDto {
   @IsNotEmpty()
   @MinLength(6)
   password: string;
+
+  // --- 2. THÊM 3 DÒNG NÀY ---
+  @IsOptional() // Tùy chọn (không bắt buộc)
+  @IsUrl() // Đảm bảo nó là một URL (nếu có)
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+  @IsOptional() @IsString() lastName?: string;
+  picture?: string;
 }
