@@ -8,15 +8,20 @@ import { Model } from 'mongoose'; // 3. Import
 @Injectable()
 export class RestaurantsService {
   constructor(
-    @InjectModel(Restaurant.name) private restaurantModel: Model<RestaurantDocument>,
+    @InjectModel(Restaurant.name)
+    private restaurantModel: Model<RestaurantDocument>,
   ) {}
 
   create(createRestaurantDto: CreateRestaurantDto) {
     return 'This action adds a new restaurant';
   }
 
-  findAll() {
-    return `This action returns all restaurants`;
+  async findAll(limit?: number): Promise<Restaurant[]> {
+    const query = this.restaurantModel.find().sort({ diemTrungBinh: -1 }); 
+    if (limit) {
+      query.limit(limit);
+    }
+    return query.exec();
   }
 
   findOne(id: number) {

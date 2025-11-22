@@ -1,17 +1,15 @@
-// src/restaurants/schemas/restaurant.schema.ts
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
 export type RestaurantDocument = HydratedDocument<Restaurant>;
 
-@Schema({ collection: 'restaurants' }) // Chỉ định tên collection là 'restaurants'
+@Schema({ collection: 'restaurants' })
 export class Restaurant {
-  // Các @Prop() này phải KHỚP với header trong file CSV của bạn
   @Prop()
   tenQuan: string;
 
   @Prop()
-  diemTrungBinh: string;
+  diemTrungBinh: number; // Đổi sang number để tính toán nếu cần
 
   @Prop()
   diaChi: string;
@@ -22,23 +20,33 @@ export class Restaurant {
   @Prop()
   giaCa: string;
 
+  // --- CÁC TRƯỜNG MỚI ---
   @Prop()
-  diemKhongGian: string;
+  lat: number; // Vĩ độ
 
   @Prop()
-  diemViTri: string;
+  lon: number; // Kinh độ
 
   @Prop()
-  diemChatLuong: string;
+  diemKhongGian: number;
 
   @Prop()
-  diemPhucVu: string;
+  diemViTri: number;
 
   @Prop()
-  diemGiaCa: string;
+  diemChatLuong: number;
 
   @Prop()
-  url: string;
+  diemPhucVu: number;
+
+  @Prop()
+  diemGiaCa: number;
+
+  @Prop()
+  avatarUrl: string; // Link ảnh đại diện
+
+  @Prop()
+  urlGoc: string; // Link gốc Foody
 }
 
 export const RestaurantSchema = SchemaFactory.createForClass(Restaurant);
