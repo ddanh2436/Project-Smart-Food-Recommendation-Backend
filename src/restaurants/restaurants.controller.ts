@@ -6,10 +6,12 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
 } from '@nestjs/common';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
+
 
 @Controller('restaurants')
 export class RestaurantsController {
@@ -21,8 +23,8 @@ export class RestaurantsController {
   }
 
   @Get()
-  findAll() {
-    return this.restaurantsService.findAll();
+  findAll(@Query('page') page: number, @Query('limit') limit: number) {
+    return this.restaurantsService.findAll(page, limit);
   }
 
   // [SỬA] Giữ nguyên id là string, không thêm dấu +
