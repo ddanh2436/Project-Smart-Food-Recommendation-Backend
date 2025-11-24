@@ -30,8 +30,9 @@ export class RestaurantsController {
     @Query('order') order: string,
     @Query('rating') rating: string,
     @Query('openNow') openNow: string,
-    @Query('userLat') userLat: string, // [MỚI]
-    @Query('userLon') userLon: string, // [MỚI]
+    @Query('userLat') userLat: string, // [MỚI] Nhận tọa độ
+    @Query('userLon') userLon: string, // [MỚI] Nhận tọa độ
+    @Query('search') search: string,   // [MỚI] Nhận từ khóa AI
   ) {
     return this.restaurantsService.findAll(
       page, 
@@ -41,11 +42,11 @@ export class RestaurantsController {
       rating, 
       openNow, 
       userLat, 
-      userLon
+      userLon,
+      search
     );
   }
 
-  // ... (Giữ nguyên các hàm khác)
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.restaurantsService.findOne(id);

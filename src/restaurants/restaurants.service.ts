@@ -5,12 +5,15 @@ import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { InjectModel } from '@nestjs/mongoose';
 import { Restaurant, RestaurantDocument } from './schemas/restaurant.schema';
 import { Model } from 'mongoose';
+import { HttpService } from '@nestjs/axios'; // Cần import HttpModule trong Module
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class RestaurantsService {
   constructor(
     @InjectModel(Restaurant.name)
     private restaurantModel: Model<RestaurantDocument>,
+    private readonly httpService: HttpService,
   ) {}
 
   create(createRestaurantDto: CreateRestaurantDto) {
@@ -44,7 +47,7 @@ export class RestaurantsService {
     return false;
   }
 
-  // --- [MỚI] HÀM PHỤ TRỢ: Tính khoảng cách (Công thức Haversine) ---
+  // --- HÀM PHỤ TRỢ: Tính khoảng cách (Haversine) ---
   private getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
     const R = 6371; // Bán kính trái đất (km)
     const dLat = this.deg2rad(lat2 - lat1);
@@ -54,7 +57,7 @@ export class RestaurantsService {
       Math.cos(this.deg2rad(lat1)) * Math.cos(this.deg2rad(lat2)) *
       Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Khoảng cách (km)
+    return R * c; 
   }
 
   private deg2rad(deg: number) {
@@ -69,12 +72,16 @@ export class RestaurantsService {
     order: string = 'desc',
     rating: string = 'all',
     openNow: string = 'false',
-    userLat: string = '', // [MỚI]
-    userLon: string = '', // [MỚI]
+    userLat: string = '', 
+    userLon: string = '',
+    search: string = '',
   ): Promise<any> {
-    const skip = (page - 1) * limit;
+    // [FIX QUAN TRỌNG] Ép kiểu số để tránh lỗi cộng chuỗi (32 + 32 = "3232")
+    const pageNum = Number(page) || 1;
+    const limitNum = Number(limit) || 32;
+    const skip = (pageNum - 1) * limitNum;
 
-    // 1. Xử lý Sort Option (DB Sort)
+    // 1. Setup Sort
     const sortOptions: any = {};
     const allowedSortFields = [
       'diemTrungBinh', 'diemKhongGian', 'diemViTri', 
@@ -84,10 +91,9 @@ export class RestaurantsService {
     const sortDirection = order === 'asc' ? 1 : -1;
     sortOptions[sortField] = sortDirection;
 
-    // 2. Xử lý Filter (Rating)
+    // 2. Setup Filter
     const filterQuery: any = {};
     const scoreFieldToCheck = sortField; 
-
     if (rating && rating !== 'all') {
       switch (rating) {
         case 'gte9': filterQuery[scoreFieldToCheck] = { $gte: 9.0 }; break;
@@ -98,107 +104,129 @@ export class RestaurantsService {
       }
     }
 
-    // 3. Xác định chế độ xử lý (Manual vs DB)
-    // Nếu cần Lọc OpenNow HOẶC Sort theo Distance -> Phải xử lý thủ công (Manual)
+    // [LOGIC GỌI AI]
+    let aiScoreMap = {}; 
+    let isAiSearch = false;
+    if (search && search.trim() !== '') {
+      isAiSearch = true;
+      try {
+        const payload = {
+            query: search,
+            // Gửi GPS sang AI nếu có
+            user_gps: (userLat && userLon) ? [parseFloat(userLat), parseFloat(userLon)] : null
+        };
+        const aiResponse = await firstValueFrom(
+          this.httpService.post('http://127.0.0.1:5000/recommend', payload)
+        );
+        
+        const recommendedItems = aiResponse.data.scores || [];
+        const recommendedIds = recommendedItems.map((item: any) => item.id);
+
+        if (recommendedIds.length > 0) {
+           filterQuery['_id'] = { $in: recommendedIds }; // Lọc theo ID AI trả về
+           recommendedItems.forEach(i => aiScoreMap[i.id] = i.S_taste); // Lưu điểm để sort
+        } else {
+           // AI không tìm thấy gì -> Trả về rỗng
+           return { data: [], total: 0, currentPage: pageNum, totalPages: 0 }; 
+        }
+      } catch (error) {
+        console.error("Lỗi kết nối AI:", error.message);
+        // Fallback: Tìm kiếm thường bằng Regex
+        filterQuery['tenQuan'] = { $regex: search, $options: 'i' };
+      }
+    }
+
+    // 3. Xác định chế độ xử lý
+    const isOpenNowBool = openNow === 'true';
     const isSortDistance = sortBy === 'distance' && userLat && userLon;
-    const isOpenNow = openNow === 'true';
     
-    const isManualProcessing = isOpenNow || isSortDistance;
+    // Nếu cần Sort Distance, Lọc OpenNow, hoặc là kết quả từ AI -> Xử lý thủ công
+    const isManualProcessing = isOpenNowBool || isSortDistance || isAiSearch;
 
     let data: any[] = [];
     let total = 0;
 
     if (isManualProcessing) {
-      // === LOGIC XỬ LÝ THỦ CÔNG ===
-      
-      // B1: Lấy TẤT CẢ bản ghi thỏa mãn Filter điểm số
+      // --- MANUAL PROCESSING ---
       let allCandidates = await this.restaurantModel
         .find(filterQuery)
-        .lean() // Dùng lean() để trả về object JS thuần, dễ gắn thêm thuộc tính distance
+        .lean()
         .exec();
 
-      // B2: Tính khoảng cách (Nếu cần)
+      // Tính khoảng cách (nếu có tọa độ user)
       if (userLat && userLon) {
         const uLat = parseFloat(userLat);
         const uLon = parseFloat(userLon);
         
         allCandidates = allCandidates.map((res: any) => {
-          // [CẢI TIẾN] Chuyển đổi dấu phẩy thành dấu chấm trước khi parse
           const parseCoord = (val: any) => {
             if (typeof val === 'number') return val;
             if (typeof val === 'string') return parseFloat(val.replace(',', '.'));
             return 0;
           };
-
           const resLat = parseCoord(res.lat);
           const resLon = parseCoord(res.lon);
-
-          const dist = (resLat && resLon) 
-            ? this.getDistanceFromLatLonInKm(uLat, uLon, resLat, resLon)
-            : 99999; // Nếu lỗi tọa độ thì đẩy xuống cuối
+          const dist = (resLat && resLon) ? this.getDistanceFromLatLonInKm(uLat, uLon, resLat, resLon) : 99999;
           return { ...res, distance: dist };
         });
       }
-      // B3: Lọc Open Now (Nếu có)
-      if (isOpenNow) {
+
+      // Lọc Open Now
+      if (isOpenNowBool) {
         allCandidates = allCandidates.filter((res: any) => this.checkIsOpen(res.gioMoCua));
       }
 
-      // B4: Sắp xếp (Sort)
-      if (isSortDistance) {
-        // Sort theo khoảng cách (Mặc định là tăng dần - gần nhất trước)
-        // Nếu user chọn 'desc' thì đảo ngược (xa nhất trước)
-        allCandidates.sort((a: any, b: any) => {
-          return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
-        });
+      // Sắp xếp
+      if (isAiSearch && sortBy === 'diemTrungBinh') {
+         // Nếu đang search AI mà không chọn sort cụ thể -> Ưu tiên độ phù hợp (điểm AI)
+         allCandidates.sort((a: any, b: any) => (aiScoreMap[b._id] || 0) - (aiScoreMap[a._id] || 0));
+      } else if (isSortDistance) {
+         // [QUAN TRỌNG] Sort khoảng cách
+         // asc: Gần -> Xa (a - b)
+         // desc: Xa -> Gần (b - a)
+         allCandidates.sort((a: any, b: any) => {
+            return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
+         });
       } else {
-        // Sort theo các tiêu chí điểm số khác (nếu chỉ lọc OpenNow)
-        allCandidates.sort((a: any, b: any) => {
-          const valA = a[sortField] || 0;
-          const valB = b[sortField] || 0;
-          return sortDirection === 1 ? valA - valB : valB - valA;
-        });
+         // Sort thường
+         allCandidates.sort((a: any, b: any) => {
+            const valA = a[sortField] || 0;
+            const valB = b[sortField] || 0;
+            return sortDirection === 1 ? valA - valB : valB - valA;
+         });
       }
 
       total = allCandidates.length;
-      // B5: Phân trang (Slice)
-      data = allCandidates.slice(skip, skip + limit);
+      // [FIX] Dùng limitNum đã ép kiểu số
+      data = allCandidates.slice(skip, skip + limitNum);
 
     } else {
-      // === LOGIC DB THUẦN TÚY (Nhanh hơn) ===
+      // --- DB QUERY (Tối ưu) ---
       total = await this.restaurantModel.countDocuments(filterQuery).exec();
       data = await this.restaurantModel
         .find(filterQuery)
         .sort(sortOptions)
         .skip(skip)
-        .limit(limit)
+        .limit(limitNum) // [FIX]
         .exec();
     }
 
     return {
       data,
       total,
-      currentPage: Number(page),
-      totalPages: Math.ceil(total / limit),
+      currentPage: pageNum,
+      totalPages: Math.ceil(total / limitNum),
       sortBy: sortBy,
       order: order
     };
   }
 
-  // ... (Các hàm findOne, update, remove giữ nguyên)
+  // ... (Giữ nguyên các hàm khác)
   async findOne(id: string): Promise<Restaurant> {
     const restaurant = await this.restaurantModel.findById(id).exec();
-    if (!restaurant) {
-      throw new NotFoundException(`Restaurant with ID ${id} not found`);
-    }
+    if (!restaurant) throw new NotFoundException(`Restaurant with ID ${id} not found`);
     return restaurant;
   }
-
-  update(id: number, updateRestaurantDto: UpdateRestaurantDto) {
-    return `This action updates a #${id} restaurant`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} restaurant`;
-  }
+  update(id: number, updateRestaurantDto: UpdateRestaurantDto) { return `This action updates a #${id} restaurant`; }
+  remove(id: number) { return `This action removes a #${id} restaurant`; }
 }
