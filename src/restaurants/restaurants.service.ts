@@ -105,7 +105,7 @@ export class RestaurantsService {
     }
 
     // [LOGIC GỌI AI]
-    let aiScoreMap = {}; 
+    let aiIndexMap: Record<string, number> = {};
     let isAiSearch = false;
     if (search && search.trim() !== '') {
       isAiSearch = true;
@@ -124,7 +124,9 @@ export class RestaurantsService {
 
         if (recommendedIds.length > 0) {
            filterQuery['_id'] = { $in: recommendedIds }; // Lọc theo ID AI trả về
-           recommendedItems.forEach(i => aiScoreMap[i.id] = i.S_taste); // Lưu điểm để sort
+           recommendedItems.forEach((item: any, index: number) => {
+               aiIndexMap[item.id] = index;
+               });
         } else {
            // AI không tìm thấy gì -> Trả về rỗng
            return { data: [], total: 0, currentPage: pageNum, totalPages: 0 }; 
@@ -139,7 +141,6 @@ export class RestaurantsService {
     // 3. Xác định chế độ xử lý
     const isOpenNowBool = openNow === 'true';
     const isSortDistance = sortBy === 'distance' && userLat && userLon;
-    
     // Nếu cần Sort Distance, Lọc OpenNow, hoặc là kết quả từ AI -> Xử lý thủ công
     const isManualProcessing = isOpenNowBool || isSortDistance || isAiSearch;
 
@@ -177,18 +178,22 @@ export class RestaurantsService {
       }
 
       // Sắp xếp
-      if (isAiSearch && sortBy === 'diemTrungBinh') {
-         // Nếu đang search AI mà không chọn sort cụ thể -> Ưu tiên độ phù hợp (điểm AI)
-         allCandidates.sort((a: any, b: any) => (aiScoreMap[b._id] || 0) - (aiScoreMap[a._id] || 0));
+     if (isAiSearch && sortBy === 'diemTrungBinh') {
+         // NẾU LÀ TÌM KIẾM AI VÀ NGƯỜI DÙNG KHÔNG CHỌN SORT CỤ THỂ KHÁC
+         // -> TUÂN THỦ TUYỆT ĐỐI THỨ TỰ CỦA AI (Index 0 lên đầu)
+         allCandidates.sort((a: any, b: any) => {
+            const idxA = aiIndexMap[a._id.toString()] ?? 9999;
+            const idxB = aiIndexMap[b._id.toString()] ?? 9999;
+            return idxA - idxB;
+         });
+
       } else if (isSortDistance) {
-         // [QUAN TRỌNG] Sort khoảng cách
-         // asc: Gần -> Xa (a - b)
-         // desc: Xa -> Gần (b - a)
+         // Sort khoảng cách (khi user bấm nút "Gần tôi" trên UI)
          allCandidates.sort((a: any, b: any) => {
             return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
          });
       } else {
-         // Sort thường
+         // Sort thường theo các tiêu chí khác (Giá, Không gian...)
          allCandidates.sort((a: any, b: any) => {
             const valA = a[sortField] || 0;
             const valB = b[sortField] || 0;
@@ -197,9 +202,7 @@ export class RestaurantsService {
       }
 
       total = allCandidates.length;
-      // [FIX] Dùng limitNum đã ép kiểu số
       data = allCandidates.slice(skip, skip + limitNum);
-
     } else {
       // --- DB QUERY (Tối ưu) ---
       total = await this.restaurantModel.countDocuments(filterQuery).exec();
@@ -221,7 +224,6 @@ export class RestaurantsService {
     };
   }
 
-  // ... (Giữ nguyên các hàm khác)
   async findOne(id: string): Promise<Restaurant> {
     const restaurant = await this.restaurantModel.findById(id).exec();
     if (!restaurant) throw new NotFoundException(`Restaurant with ID ${id} not found`);
