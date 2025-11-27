@@ -147,6 +147,11 @@ export class AuthService {
     try {
       // 1. Thử tìm user bằng email
       user = await this.usersService.findOneByEmail(googleUser.email);
+      // if (googleUser.picture && user.picture !== googleUser.picture) {
+      //    // Bạn cần đảm bảo UsersService có hàm update hoặc dùng model trực tiếp để update
+      //    // Ở đây ta gọi updateProfile (cần chắc chắn DTO cho phép update picture)
+      //    await this.usersService.updateProfile(user._id.toString(), { picture: googleUser.picture });
+      // }
     } catch (error) {
       // 2. Nếu không tìm thấy (NotFoundException), thì tạo user mới
       if (error.status === 404) {
@@ -156,7 +161,7 @@ export class AuthService {
           firstName: googleUser.firstName, // Lưu tên
           lastName: googleUser.lastName, // Lưu họ
           picture: googleUser.picture,
-          password: Math.random().toString(36).substring(7),
+           password: Math.random().toString(36).substring(7),
         });
       } else {
         throw error;
