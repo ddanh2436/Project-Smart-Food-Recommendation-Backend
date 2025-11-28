@@ -76,7 +76,6 @@ export class RestaurantsService {
     userLon: string = '',
     search: string = '',
   ): Promise<any> {
-    // [FIX QUAN TRỌNG] Ép kiểu số để tránh lỗi cộng chuỗi (32 + 32 = "3232")
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 32;
     const skip = (pageNum - 1) * limitNum;
@@ -91,7 +90,7 @@ export class RestaurantsService {
     const sortDirection = order === 'asc' ? 1 : -1;
     sortOptions[sortField] = sortDirection;
 
-    // 2. Setup Filter
+    // 2. Setup Filter Rating
     const filterQuery: any = {};
     const scoreFieldToCheck = sortField; 
     if (rating && rating !== 'all') {
@@ -104,44 +103,72 @@ export class RestaurantsService {
       }
     }
 
-    // [LOGIC GỌI AI]
+    // [LOGIC TÌM KIẾM NGHIÊM NGẶT (STRICT SEARCH)]
     let aiIndexMap: Record<string, number> = {};
     let isAiSearch = false;
+
     if (search && search.trim() !== '') {
       isAiSearch = true;
+      
+      // Tách từ khóa bằng dấu phẩy (xử lý cả trường hợp nhiều dấu phẩy hoặc khoảng trắng)
+      // Ví dụ: "Miền Nam, Phở , Sang trọng" -> ["Miền Nam", "Phở", "Sang trọng"]
+      const keywords = search.split(/[,]+/).map(k => k.trim()).filter(k => k.length > 0);
+
+      // --- Bước A: Gọi AI (Lấy ID ranking) ---
+      // Mục đích: Lấy danh sách ID phù hợp nhất theo ngữ nghĩa để ưu tiên hiển thị
+      let recommendedIds: string[] = [];
       try {
         const payload = {
             query: search,
-            // Gửi GPS sang AI nếu có
             user_gps: (userLat && userLon) ? [parseFloat(userLat), parseFloat(userLon)] : null
         };
+        // Timeout ngắn để tránh treo nếu AI chậm
         const aiResponse = await firstValueFrom(
-          this.httpService.post('http://127.0.0.1:5000/recommend', payload)
+          this.httpService.post('http://127.0.0.1:5000/recommend', payload, { timeout: 3000 })
         );
-        
         const recommendedItems = aiResponse.data.scores || [];
-        const recommendedIds = recommendedItems.map((item: any) => item.id);
-
+        recommendedIds = recommendedItems.map((item: any) => item.id);
+        
         if (recommendedIds.length > 0) {
-           filterQuery['_id'] = { $in: recommendedIds }; // Lọc theo ID AI trả về
+           // Lưu lại thứ tự của AI để sort sau này
            recommendedItems.forEach((item: any, index: number) => {
                aiIndexMap[item.id] = index;
-               });
-        } else {
-           // AI không tìm thấy gì -> Trả về rỗng
-           return { data: [], total: 0, currentPage: pageNum, totalPages: 0 }; 
+           });
+           
+           // [QUAN TRỌNG] Chỉ thêm điều kiện lọc theo ID nếu tìm thấy
+           filterQuery['_id'] = { $in: recommendedIds };
         }
       } catch (error) {
-        console.error("Lỗi kết nối AI:", error.message);
-        // Fallback: Tìm kiếm thường bằng Regex
-        filterQuery['tenQuan'] = { $regex: search, $options: 'i' };
+        console.warn("AI Service skip:", error.message);
+        // Nếu AI lỗi, bỏ qua filter ID, hệ thống sẽ tự tìm trong toàn bộ DB dựa vào keywords bên dưới
+      }
+
+      // --- Bước B: Bộ lọc Từ khóa Bắt buộc ($and) ---
+      // Đây là chốt chặn cuối cùng: Dù AI gợi ý gì, quán phải chứa TẤT CẢ từ khóa
+      if (keywords.length > 0) {
+        if (!filterQuery['$and']) {
+            filterQuery['$and'] = [];
+        }
+
+        keywords.forEach(keyword => {
+            // Escape ký tự đặc biệt trong regex để tránh lỗi (vd: dấu ngoặc, cộng, sao...)
+            const safeKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // Tạo điều kiện: (Tags chứa từ khóa) HOẶC (Tên quán chứa từ khóa)
+            filterQuery['$and'].push({
+                $or: [
+                    { tags: { $regex: safeKeyword, $options: 'i' } },
+                    { tenQuan: { $regex: safeKeyword, $options: 'i' } }
+                ]
+            });
+        });
       }
     }
 
-    // 3. Xác định chế độ xử lý
+    // 3. Chế độ xử lý (Manual vs DB)
     const isOpenNowBool = openNow === 'true';
     const isSortDistance = sortBy === 'distance' && userLat && userLon;
-    // Nếu cần Sort Distance, Lọc OpenNow, hoặc là kết quả từ AI -> Xử lý thủ công
+    // Nếu có AI search, ta cũng dùng manual processing để sort lại theo thứ tự AI
     const isManualProcessing = isOpenNowBool || isSortDistance || isAiSearch;
 
     let data: any[] = [];
@@ -149,12 +176,13 @@ export class RestaurantsService {
 
     if (isManualProcessing) {
       // --- MANUAL PROCESSING ---
+      // Lấy dữ liệu thô từ DB (đã lọc sơ bộ bằng filterQuery gồm ID và Keywords)
       let allCandidates = await this.restaurantModel
         .find(filterQuery)
         .lean()
         .exec();
 
-      // Tính khoảng cách (nếu có tọa độ user)
+      // Tính khoảng cách
       if (userLat && userLon) {
         const uLat = parseFloat(userLat);
         const uLon = parseFloat(userLon);
@@ -172,28 +200,24 @@ export class RestaurantsService {
         });
       }
 
-      // Lọc Open Now
+      // Lọc giờ mở cửa
       if (isOpenNowBool) {
         allCandidates = allCandidates.filter((res: any) => this.checkIsOpen(res.gioMoCua));
       }
 
       // Sắp xếp
-     if (isAiSearch && sortBy === 'diemTrungBinh') {
-         // NẾU LÀ TÌM KIẾM AI VÀ NGƯỜI DÙNG KHÔNG CHỌN SORT CỤ THỂ KHÁC
-         // -> TUÂN THỦ TUYỆT ĐỐI THỨ TỰ CỦA AI (Index 0 lên đầu)
+      if (isAiSearch && sortBy === 'diemTrungBinh') {
+         // Ưu tiên thứ tự từ AI (nếu có trong map), nếu không thì để cuối
          allCandidates.sort((a: any, b: any) => {
-            const idxA = aiIndexMap[a._id.toString()] ?? 9999;
-            const idxB = aiIndexMap[b._id.toString()] ?? 9999;
+            const idxA = aiIndexMap[a._id.toString()] !== undefined ? aiIndexMap[a._id.toString()] : 99999;
+            const idxB = aiIndexMap[b._id.toString()] !== undefined ? aiIndexMap[b._id.toString()] : 99999;
             return idxA - idxB;
          });
-
       } else if (isSortDistance) {
-         // Sort khoảng cách (khi user bấm nút "Gần tôi" trên UI)
          allCandidates.sort((a: any, b: any) => {
             return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
          });
       } else {
-         // Sort thường theo các tiêu chí khác (Giá, Không gian...)
          allCandidates.sort((a: any, b: any) => {
             const valA = a[sortField] || 0;
             const valB = b[sortField] || 0;
@@ -204,13 +228,13 @@ export class RestaurantsService {
       total = allCandidates.length;
       data = allCandidates.slice(skip, skip + limitNum);
     } else {
-      // --- DB QUERY (Tối ưu) ---
+      // --- DB QUERY THUẦN TÚY (Tối ưu tốc độ) ---
       total = await this.restaurantModel.countDocuments(filterQuery).exec();
       data = await this.restaurantModel
         .find(filterQuery)
         .sort(sortOptions)
         .skip(skip)
-        .limit(limitNum) // [FIX]
+        .limit(limitNum)
         .exec();
     }
 
