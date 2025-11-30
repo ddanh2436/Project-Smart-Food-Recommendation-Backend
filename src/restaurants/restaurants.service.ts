@@ -5,8 +5,9 @@ import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { InjectModel } from '@nestjs/mongoose';
 import { Restaurant, RestaurantDocument } from './schemas/restaurant.schema';
 import { Model } from 'mongoose';
-import { HttpService } from '@nestjs/axios'; // Cần import HttpModule trong Module
+import { HttpService } from '@nestjs/axios'; 
 import { firstValueFrom } from 'rxjs';
+import FormData from 'form-data'; // [MỚI] Cần cài: npm install form-data
 
 @Injectable()
 export class RestaurantsService {
@@ -20,7 +21,56 @@ export class RestaurantsService {
     return 'This action adds a new restaurant';
   }
 
-  // --- HÀM PHỤ TRỢ: Kiểm tra giờ mở cửa ---
+  // [MỚI] HÀM XỬ LÝ SEARCH ẢNH
+  async searchByImage(file: Express.Multer.File) {
+    try {
+      if (!file) throw new Error("Không có file được tải lên");
+
+      // 1. Gửi ảnh sang AI Service (Port 5000)
+      const formData = new FormData();
+      formData.append('file', Buffer.from(file.buffer), file.originalname);
+
+      const aiResponse = await firstValueFrom(
+        this.httpService.post('http://127.0.0.1:5000/predict-food', formData, {
+          headers: {
+            ...formData.getHeaders(),
+          },
+        })
+      );
+
+      const foodName = aiResponse.data.food_name;
+      console.log('AI Detected:', foodName);
+
+      if (!foodName) {
+        return { data: [], message: 'Không nhận diện được món ăn' };
+      }
+
+      // 2. Gọi lại hàm findAll để tìm quán theo tên món AI trả về
+      // (Ví dụ: AI trả về "phở" -> tìm các quán phở ngon nhất)
+      const result = await this.findAll(
+        1,      // page
+        10,     // limit
+        'diemTrungBinh', // sortBy: ưu tiên quán ngon
+        'desc', // order
+        'all',  // rating
+        'false',// openNow
+        '', '', // lat, lon
+        foodName // search query chính là tên món
+      );
+
+      return {
+        ...result,
+        detectedFood: foodName // Trả thêm tên món để hiển thị UI
+      };
+
+    } catch (error) {
+      console.error('Lỗi search by image:', error.message);
+      return { data: [], message: 'Lỗi xử lý hình ảnh' };
+    }
+  }
+
+  // --- CÁC HÀM CŨ GIỮ NGUYÊN BÊN DƯỚI ---
+
   private checkIsOpen(gioMoCua: string): boolean {
     if (!gioMoCua) return false;
     const now = new Date();
@@ -47,9 +97,8 @@ export class RestaurantsService {
     return false;
   }
 
-  // --- HÀM PHỤ TRỢ: Tính khoảng cách (Haversine) ---
   private getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
-    const R = 6371; // Bán kính trái đất (km)
+    const R = 6371; 
     const dLat = this.deg2rad(lat2 - lat1);
     const dLon = this.deg2rad(lon2 - lon1);
     const a =
@@ -64,7 +113,6 @@ export class RestaurantsService {
     return deg * (Math.PI / 180);
   }
 
-  // --- HÀM CHÍNH: FIND ALL ---
   async findAll(
     page: number = 1, 
     limit: number = 32,
@@ -76,7 +124,6 @@ export class RestaurantsService {
     userLon: string = '',
     search: string = '',
   ): Promise<any> {
-    // [FIX QUAN TRỌNG] Ép kiểu số để tránh lỗi cộng chuỗi (32 + 32 = "3232")
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 32;
     const skip = (pageNum - 1) * limitNum;
@@ -104,7 +151,7 @@ export class RestaurantsService {
       }
     }
 
-    // [LOGIC GỌI AI - QUAY VỀ BẢN GỐC]
+    // Logic gọi AI (Text Search)
     let aiIndexMap: Record<string, number> = {};
     let isAiSearch = false;
     if (search && search.trim() !== '') {
@@ -112,7 +159,6 @@ export class RestaurantsService {
       try {
         const payload = {
             query: search,
-            // Gửi GPS sang AI nếu có
             user_gps: (userLat && userLon) ? [parseFloat(userLat), parseFloat(userLon)] : null
         };
         const aiResponse = await firstValueFrom(
@@ -123,17 +169,15 @@ export class RestaurantsService {
         const recommendedIds = recommendedItems.map((item: any) => item.id);
 
         if (recommendedIds.length > 0) {
-           filterQuery['_id'] = { $in: recommendedIds }; // Lọc theo ID AI trả về
+           filterQuery['_id'] = { $in: recommendedIds }; 
            recommendedItems.forEach((item: any, index: number) => {
                aiIndexMap[item.id] = index;
            });
         } else {
-           // AI không tìm thấy gì -> Trả về rỗng
            return { data: [], total: 0, currentPage: pageNum, totalPages: 0 }; 
         }
       } catch (error) {
         console.error("Lỗi kết nối AI:", error.message);
-        // Fallback: Tìm kiếm thường bằng Regex (chỉ tìm theo tên quán)
         filterQuery['tenQuan'] = { $regex: search, $options: 'i' };
       }
     }
@@ -141,20 +185,17 @@ export class RestaurantsService {
     // 3. Xác định chế độ xử lý
     const isOpenNowBool = openNow === 'true';
     const isSortDistance = sortBy === 'distance' && userLat && userLon;
-    // Nếu cần Sort Distance, Lọc OpenNow, hoặc là kết quả từ AI -> Xử lý thủ công
     const isManualProcessing = isOpenNowBool || isSortDistance || isAiSearch;
 
     let data: any[] = [];
     let total = 0;
 
     if (isManualProcessing) {
-      // --- MANUAL PROCESSING ---
       let allCandidates = await this.restaurantModel
         .find(filterQuery)
         .lean()
         .exec();
 
-      // Tính khoảng cách (nếu có tọa độ user)
       if (userLat && userLon) {
         const uLat = parseFloat(userLat);
         const uLon = parseFloat(userLon);
@@ -172,15 +213,11 @@ export class RestaurantsService {
         });
       }
 
-      // Lọc Open Now
       if (isOpenNowBool) {
         allCandidates = allCandidates.filter((res: any) => this.checkIsOpen(res.gioMoCua));
       }
 
-      // Sắp xếp
      if (isAiSearch && sortBy === 'diemTrungBinh') {
-         // NẾU LÀ TÌM KIẾM AI VÀ NGƯỜI DÙNG KHÔNG CHỌN SORT CỤ THỂ KHÁC
-         // -> TUÂN THỦ TUYỆT ĐỐI THỨ TỰ CỦA AI (Index 0 lên đầu)
          allCandidates.sort((a: any, b: any) => {
             const idxA = aiIndexMap[a._id.toString()] ?? 9999;
             const idxB = aiIndexMap[b._id.toString()] ?? 9999;
@@ -188,12 +225,10 @@ export class RestaurantsService {
          });
 
       } else if (isSortDistance) {
-         // Sort khoảng cách (khi user bấm nút "Gần tôi" trên UI)
          allCandidates.sort((a: any, b: any) => {
             return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
          });
       } else {
-         // Sort thường theo các tiêu chí khác (Giá, Không gian...)
          allCandidates.sort((a: any, b: any) => {
             const valA = a[sortField] || 0;
             const valB = b[sortField] || 0;
@@ -204,7 +239,6 @@ export class RestaurantsService {
       total = allCandidates.length;
       data = allCandidates.slice(skip, skip + limitNum);
     } else {
-      // --- DB QUERY (Tối ưu) ---
       total = await this.restaurantModel.countDocuments(filterQuery).exec();
       data = await this.restaurantModel
         .find(filterQuery)

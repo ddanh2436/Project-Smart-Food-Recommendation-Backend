@@ -8,7 +8,10 @@ import {
   Param,
   Delete,
   Query,
+  UseInterceptors, // [MỚI]
+  UploadedFile,    // [MỚI]
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express'; // [MỚI]
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
@@ -22,6 +25,13 @@ export class RestaurantsController {
     return this.restaurantsService.create(createRestaurantDto);
   }
 
+  // [MỚI] API Tìm kiếm bằng hình ảnh
+  @Post('search-by-image')
+  @UseInterceptors(FileInterceptor('file'))
+  async searchByImage(@UploadedFile() file: Express.Multer.File) {
+    return this.restaurantsService.searchByImage(file);
+  }
+
   @Get()
   findAll(
     @Query('page') page: number,
@@ -30,9 +40,9 @@ export class RestaurantsController {
     @Query('order') order: string,
     @Query('rating') rating: string,
     @Query('openNow') openNow: string,
-    @Query('userLat') userLat: string, // [MỚI] Nhận tọa độ
-    @Query('userLon') userLon: string, // [MỚI] Nhận tọa độ
-    @Query('search') search: string,   // [MỚI] Nhận từ khóa AI
+    @Query('userLat') userLat: string, 
+    @Query('userLon') userLon: string, 
+    @Query('search') search: string,   
   ) {
     return this.restaurantsService.findAll(
       page, 
