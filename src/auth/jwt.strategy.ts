@@ -8,7 +8,6 @@ import { ConfigService } from '@nestjs/config';
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(configService: ConfigService) {
     
-    // --- SỬA TỪ ĐÂY ---
     const secret = configService.get<string>('JWT_SECRET');
 
     if (!secret) {
@@ -18,9 +17,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: secret, // <-- Dùng biến 'secret' đã được kiểm tra
+      secretOrKey: secret,
     });
-    // --- SỬA ĐẾN ĐÂY ---
   }
 
   async validate(payload: any) {

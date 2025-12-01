@@ -32,8 +32,6 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       // accessToken (của Google, chúng ta không dùng)
     };
     
-    // 'done' sẽ gửi đối tượng 'user' này đến hàm xử lý
-    // trong AuthController (ở route /google/callback)
     done(null, user);
   }
 }

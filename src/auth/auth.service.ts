@@ -147,31 +147,36 @@ export class AuthService {
     try {
       // 1. Thử tìm user bằng email
       user = await this.usersService.findOneByEmail(googleUser.email);
-      // if (googleUser.picture && user.picture !== googleUser.picture) {
-      //    // Bạn cần đảm bảo UsersService có hàm update hoặc dùng model trực tiếp để update
-      //    // Ở đây ta gọi updateProfile (cần chắc chắn DTO cho phép update picture)
-      //    await this.usersService.updateProfile(user._id.toString(), { picture: googleUser.picture });
-      // }
+
+      // === BỔ SUNG LOGIC CẬP NHẬT TẠI ĐÂY ===
+      // Nếu user đã tồn tại, kiểm tra xem có cần cập nhật avatar từ Google không
+      if (googleUser.picture && user.picture !== googleUser.picture) {
+        user = await this.usersService.update(user._id.toString(), {
+          picture: googleUser.picture,
+        } as any); // Cast 'as any' hoặc đảm bảo UpdateUserDto có trường 'picture'
+      }
+      // =======================================
+
     } catch (error) {
       // 2. Nếu không tìm thấy (NotFoundException), thì tạo user mới
       if (error.status === 404) {
         user = await this.usersService.create({
           email: googleUser.email,
-          username: googleUser.email.split('@')[0], // Username chuẩn
-          firstName: googleUser.firstName, // Lưu tên
-          lastName: googleUser.lastName, // Lưu họ
+          username: googleUser.email.split('@')[0],
+          firstName: googleUser.firstName,
+          lastName: googleUser.lastName,
           picture: googleUser.picture,
-           password: Math.random().toString(36).substring(7),
-        });
+          password: Math.random().toString(36).substring(7),
+        } as any); // Cast 'as any' nếu CreateUserDto báo lỗi thiếu trường
       } else {
         throw error;
       }
     }
 
-    // 3. Tạo JWT (của ứng dụng)
+    // 3. Tạo JWT (giữ nguyên code cũ)
     const tokens = await this._generateTokens(user._id.toString(), user.email);
-
-    // 4. Cập nhật refresh token
+    
+    // ... phần còn lại giữ nguyên
     await this.usersService.updateRefreshToken(
       user._id.toString(),
       tokens.refreshToken,
@@ -181,8 +186,6 @@ export class AuthService {
   }
 
   async getProfile(userId: string) {
-    // Hàm findOne của UsersService là hoàn hảo cho việc này
-    // Schema sẽ tự động xóa password và refreshToken
     const user = await this.usersService.findOne(userId);
     return user;
   }
