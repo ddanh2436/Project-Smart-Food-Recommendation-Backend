@@ -11,7 +11,7 @@ export class Restaurant {
   @Prop() diaChi: string;
   @Prop() gioMoCua: string;
   @Prop() giaCa: string;
-  @Prop() tags: string; // [QUAN TRỌNG CHO AI]
+  @Prop() tags: string; 
 
   @Prop() lat: number;
   @Prop() lon: number;

@@ -86,12 +86,9 @@ export class AuthController {
   @Get('profile')
   getProfile(@Req() req: RequestWithUser) {
     const userId = req.user.sub;
-    // Đảm bảo bạn đã có hàm getProfile trong auth.service.ts
     return this.authService.getProfile(userId);
   }
-  // -------------------------------------------------
 
-  // --- HÀM UPDATE CỦA BẠN (ĐÃ ĐÚNG) ---
   @UseGuards(JwtAuthGuard)
   @Patch('profile')
   updateProfile(
