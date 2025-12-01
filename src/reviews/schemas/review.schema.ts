@@ -17,6 +17,12 @@ export class Review {
 
   @Prop()
   noiDung: string;
+
+  @Prop()
+  aiSentimentLabel: string; // Ví dụ: 'LABEL_2' (Tích cực)
+
+  @Prop()
+  aiSentimentScore: number;
 }
 
 export const ReviewSchema = SchemaFactory.createForClass(Review);
