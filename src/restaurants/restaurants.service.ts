@@ -219,6 +219,12 @@ export class RestaurantsService {
 
      if (isAiSearch && sortBy === 'diemTrungBinh') {
          allCandidates.sort((a: any, b: any) => {
+            // [FIX] Nếu user chọn Tăng dần (ASC), sort theo điểm số thực tế
+            if (order === 'asc') {
+                return (a.diemTrungBinh || 0) - (b.diemTrungBinh || 0);
+            }
+
+            // [FIX] Mặc định (DESC) hoặc không chọn: Ưu tiên độ phù hợp AI (Index thấp đứng trước)
             const idxA = aiIndexMap[a._id.toString()] ?? 9999;
             const idxB = aiIndexMap[b._id.toString()] ?? 9999;
             return idxA - idxB;
