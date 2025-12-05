@@ -271,4 +271,71 @@ export class RestaurantsService {
   }
   update(id: number, updateRestaurantDto: UpdateRestaurantDto) { return `This action updates a #${id} restaurant`; }
   remove(id: number) { return `This action removes a #${id} restaurant`; }
+
+  private getRandomReply(type: 'success' | 'notFound' | 'error', params?: { count?: number; keyword?: string }): string {
+    const { count, keyword } = params || {};
+
+    const templates = {
+      success: [
+        `Tuyệt vời! Mình tìm được ${count} quán "${keyword}" được đánh giá cao nhất cho bạn đây 👇`,
+        `Có ngay! Dưới đây là ${count} địa điểm bán "${keyword}" xịn xò nhất mà mình lọc được. Mời bạn thẩm! 😋`,
+        `Bingo! 🎯 Tìm thấy ${count} quán "${keyword}" cực phẩm. Bạn xem thử nhé!`,
+        `Dựa trên yêu cầu "${keyword}", đây là top ${count} quán "đỉnh của chóp" mình gợi ý cho bạn.`,
+        `Đã tìm ra! ${count} địa điểm này chắc chắn sẽ làm bạn hài lòng với món "${keyword}".`,
+        `Món "${keyword}" hả? Dễ ợt! Mình có ${count} gợi ý siêu chất lượng bên dưới này.`
+      ],
+      notFound: [
+        `Hic, tiếc quá! Mình lục tung dữ liệu mà không thấy quán nào bán "${keyword}". Hay bạn thử món khác xem? 🍜`,
+        `Rất tiếc, hiện tại mình chưa có dữ liệu về món "${keyword}". Bạn thử tìm "Phở", "Cơm tấm" xem sao nhé!`,
+        `Ca này khó! 😅 Mình không tìm thấy kết quả nào cho "${keyword}". Bạn kiểm tra lại chính tả hoặc thử từ khóa ngắn gọn hơn nhé.`,
+        `Hmm... Món này nghe lạ quá, mình chưa tìm thấy quán phù hợp. Bạn thử đổi món khác nhé?`
+      ],
+      error: [
+        `Ouch! Hệ thống đang bị "đau bụng" chút xíu. Bạn thử lại sau nhé! 🤒`,
+        `Xin lỗi, mình đang mất kết nối tạm thời. Bạn chờ chút rồi hỏi lại nha!`,
+        `Máy chủ đang bận, bạn vui lòng thử lại sau vài phút nhé!`
+      ]
+    };
+
+    const list = templates[type];
+    const randomIndex = Math.floor(Math.random() * list.length);
+    return list[randomIndex];
+  }
+
+  async chatWithAI(message: string, userLat?: string, userLon?: string) {
+    try {
+      // 1. Gọi logic findAll lấy 50 quán để sort
+      const result = await this.findAll(
+        1, 50, 'diemTrungBinh', 'desc', 'all', 'false', userLat, userLon, message
+      );
+
+      // 2. Sort thủ công theo rating
+      let topRestaurants = result.data || [];
+      topRestaurants.sort((a: any, b: any) => (b.diemTrungBinh || 0) - (a.diemTrungBinh || 0));
+
+      // 3. Lấy Top 5
+      topRestaurants = topRestaurants.slice(0, 5);
+      const count = topRestaurants.length;
+
+      // 4. [MỚI] Chọn câu trả lời ngẫu nhiên
+      let replyText = "";
+      if (count > 0) {
+        replyText = this.getRandomReply('success', { count, keyword: message });
+      } else {
+        replyText = this.getRandomReply('notFound', { keyword: message });
+      }
+
+      return {
+        reply: replyText,
+        results: topRestaurants
+      };
+
+    } catch (error) {
+      console.error("Chatbot Error:", error);
+      return {
+        reply: this.getRandomReply('error'),
+        results: []
+      };
+    }
+  }
 }
