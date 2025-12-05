@@ -71,4 +71,10 @@ export class RestaurantsController {
   remove(@Param('id') id: string) {
     return this.restaurantsService.remove(+id);
   }
+
+  @Post('chat')
+async chat(@Body() body: { message: string, userLat?: string, userLon?: string }) {
+  // Gọi hàm chatWithAI vừa viết ở trên
+  return this.restaurantsService.chatWithAI(body.message, body.userLat, body.userLon);
+}
 }
