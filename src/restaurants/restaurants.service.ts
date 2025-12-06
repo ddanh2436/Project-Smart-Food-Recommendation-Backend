@@ -28,6 +28,12 @@ export class RestaurantsService {
     try {
       if (!file) throw new Error("Không có file được tải lên");
 
+      const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+      
+      // [QUAN TRỌNG] Log ra console để xem Backend đang kết nối đi đâu
+      console.log('--- DEBUG AI CONNECTION ---');
+      console.log('AI_SERVICE_URL env:', process.env.AI_SERVICE_URL);
+      console.log('Connecting to:', aiUrl);
       
       const formData = new FormData();
       formData.append('file', Buffer.from(file.buffer), file.originalname);
