@@ -7,7 +7,8 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe()); // Sử dụng ValidationPipe toàn cục
 
   app.enableCors({
-    origin: 'http://localhost:3000', // URL của frontend Next.js của bạn
+    origin: "*", 
+    methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     credentials: true,
   });
   await app.listen(process.env.PORT ?? 3001);
