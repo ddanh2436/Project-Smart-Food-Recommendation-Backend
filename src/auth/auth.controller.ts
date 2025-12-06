@@ -47,11 +47,11 @@ export class AuthController {
     // 'req.user' lúc này là đối tượng 'user' từ GoogleStrategy
     const { accessToken, refreshToken } =
       await this.authService.signInWithGoogle(req.user);
-
+    
     // Chuyển hướng người dùng về Frontend, đính kèm token
-    const frontendUrl = 'http://localhost:3000/auth/callback'; // Sửa port FE nếu cần
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'; // Sửa port FE nếu cần
     res.redirect(
-      `${frontendUrl}?accessToken=${accessToken}&refreshToken=${refreshToken}`,
+      `${frontendUrl}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`,
     );
   }
 
