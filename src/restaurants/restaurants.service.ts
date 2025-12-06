@@ -9,6 +9,8 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import FormData from 'form-data'; // [MỚI] Cần cài: npm install form-data
 
+const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+
 @Injectable()
 export class RestaurantsService {
   constructor(
@@ -31,7 +33,7 @@ export class RestaurantsService {
       formData.append('file', Buffer.from(file.buffer), file.originalname);
 
       const aiResponse = await firstValueFrom(
-        this.httpService.post('http://127.0.0.1:5000/predict-food', formData, {
+        this.httpService.post(`${aiUrl}/predict-food`, formData, {
           headers: {
             ...formData.getHeaders(),
           },
