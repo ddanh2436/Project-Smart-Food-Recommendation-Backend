@@ -26,7 +26,7 @@ export class RestaurantsService {
     try {
       if (!file) throw new Error("Không có file được tải lên");
 
-      // 1. Gửi ảnh sang AI Service (Port 5000)
+      
       const formData = new FormData();
       formData.append('file', Buffer.from(file.buffer), file.originalname);
 
@@ -45,22 +45,30 @@ export class RestaurantsService {
         return { data: [], message: 'Không nhận diện được món ăn' };
       }
 
-      // 2. Gọi lại hàm findAll để tìm quán theo tên món AI trả về
-      // (Ví dụ: AI trả về "phở" -> tìm các quán phở ngon nhất)
+      // 2. [QUAN TRỌNG] Gọi hàm findAll lấy số lượng lớn (50 quán)
+      // Lý do: Để đảm bảo không bỏ sót quán ngon nào chỉ vì AI xếp hạng độ liên quan khác
       const result = await this.findAll(
-        1,      // page
-        10,     // limit
-        'diemTrungBinh', // sortBy: ưu tiên quán ngon
-        'desc', // order
-        'all',  // rating
-        'false',// openNow
-        '', '', // lat, lon
-        foodName // search query chính là tên món
+        1,               // page
+        50,              // limit: Lấy 50 để lọc
+        'diemTrungBinh', // sortBy
+        'desc',          // order
+        'all',           // rating
+        'false',         // openNow
+        '', '',          // lat, lon (Tạm để trống, có thể update nếu cần GPS)
+        foodName         // search query (Tên món AI đoán)
       );
 
+      // 3. [QUAN TRỌNG] Tự sắp xếp lại theo điểm trung bình (Cao -> Thấp)
+      let topRestaurants = result.data || [];
+      topRestaurants.sort((a: any, b: any) => (b.diemTrungBinh || 0) - (a.diemTrungBinh || 0));
+
+      // 4. [QUAN TRỌNG] Cắt lấy đúng Top 5 quán ngon nhất
+      topRestaurants = topRestaurants.slice(0, 5);
+
       return {
-        ...result,
-        detectedFood: foodName // Trả thêm tên món để hiển thị UI
+        data: topRestaurants, // Trả về danh sách 5 quán xịn nhất
+        detectedFood: foodName,
+        total: topRestaurants.length
       };
 
     } catch (error) {
