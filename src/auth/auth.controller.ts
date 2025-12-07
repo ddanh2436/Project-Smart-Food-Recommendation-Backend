@@ -16,11 +16,11 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { Request } from 'express';
+import type { Response } from 'express'; // Import Response từ express
 import { AuthGuard } from '@nestjs/passport';
-import type { Response } from 'express';
 import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
-// Interface để thêm 'user' vào Request (từ Guard)
+// Interface mở rộng Request để TypeScript hiểu req.user
 interface RequestWithUser extends Request {
   user: {
     sub: string;
@@ -32,29 +32,34 @@ interface RequestWithUser extends Request {
 export class AuthController {
   constructor(private authService: AuthService) {}
 
-  // ... (Các route Google, register, login, logout, refresh của bạn ở đây...)
-  // ... (Giữ nguyên các hàm đó) ...
-
+  // --- 1. GOOGLE LOGIN ---
   @Get('google')
   @UseGuards(AuthGuard('google'))
   async googleAuth(@Req() req) {
-    // Passport-google sẽ tự động chuyển hướng đến Google
+    // Hàm này chỉ để kích hoạt Guard, Passport sẽ tự chuyển hướng sang Google
   }
 
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
-    // 'req.user' lúc này là đối tượng 'user' từ GoogleStrategy
-    const { accessToken, refreshToken } =
-      await this.authService.signInWithGoogle(req.user);
-    
-    // Chuyển hướng người dùng về Frontend, đính kèm token
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'; // Sửa port FE nếu cần
+    // 1. Xử lý đăng nhập, tạo Token
+    const { accessToken, refreshToken } = await this.authService.signInWithGoogle(req.user);
+
+    // 2. [QUAN TRỌNG] Xác định URL Frontend để chuyển hướng về
+    // Nếu chạy trên Render (có biến ENV), nó sẽ dùng link Vercel.
+    // Nếu chạy Local (không có biến ENV), nó sẽ dùng localhost:3000.
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+    // [DEBUG LOG] In ra để kiểm tra trên Render Logs
+    console.log("🚀 Redirecting Google User to:", frontendUrl);
+
+    // 3. Chuyển hướng về Frontend kèm theo Token trên URL
     res.redirect(
       `${frontendUrl}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`,
     );
   }
 
+  // --- 2. ĐĂNG KÝ / ĐĂNG NHẬP THƯỜNG ---
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   register(@Body() registerDto: RegisterDto) {
@@ -67,6 +72,7 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
+  // --- 3. ĐĂNG XUẤT & REFRESH TOKEN ---
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   @HttpCode(HttpStatus.OK)
@@ -81,7 +87,7 @@ export class AuthController {
     return this.authService.refresh(body.userId, body.refreshToken);
   }
 
-  // --- THÊM HÀM NÀY VÀO (ĐÂY LÀ PHẦN BỊ THIẾU) ---
+  // --- 4. PROFILE USER (GET & UPDATE) ---
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   getProfile(@Req() req: RequestWithUser) {
