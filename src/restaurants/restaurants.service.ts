@@ -179,8 +179,9 @@ export class RestaurantsService {
             query: search,
             user_gps: (userLat && userLon) ? [parseFloat(userLat), parseFloat(userLon)] : null
         };
+        const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
         const aiResponse = await firstValueFrom(
-          this.httpService.post('http://127.0.0.1:5000/recommend', payload)
+          this.httpService.post(`${aiUrl}/recommend`, payload)
         );
         
         const recommendedItems = aiResponse.data.scores || [];
