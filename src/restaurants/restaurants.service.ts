@@ -31,9 +31,11 @@ export class RestaurantsService {
       const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
       
       // [QUAN TRỌNG] Log ra console để xem Backend đang kết nối đi đâu
-      console.log('--- DEBUG AI CONNECTION ---');
-      console.log('AI_SERVICE_URL env:', process.env.AI_SERVICE_URL);
-      console.log('Connecting to:', aiUrl);
+      console.log("------------------------------------------------");
+      console.log("📸 ĐANG GỌI AI SERVICE...");
+      console.log("🔗 URL được dùng:", aiUrl);
+      console.log("❓ Có phải localhost không?:", aiUrl.includes('127.0.0.1') ? "CÓ (LỖI)" : "KHÔNG (OK)");
+      console.log("------------------------------------------------");
       
       const formData = new FormData();
       formData.append('file', Buffer.from(file.buffer), file.originalname);
