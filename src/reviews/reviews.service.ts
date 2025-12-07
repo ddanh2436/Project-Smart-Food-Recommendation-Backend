@@ -1,59 +1,70 @@
-import { Injectable, Logger } from '@nestjs/common'; // [THÊM] Logger
+// src/reviews/reviews.service.ts
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { HttpService } from '@nestjs/axios';
-import { lastValueFrom } from 'rxjs';
-import { Review } from './schemas/review.schema';
+import { firstValueFrom } from 'rxjs'; // [UPDATE] Dùng firstValueFrom thay cho lastValueFrom
+import { Review, ReviewDocument } from './schemas/review.schema';
 import { CreateReviewDto } from './dto/create-review.dto';
 
 @Injectable()
 export class ReviewsService {
-  // Tạo logger để theo dõi tiến độ cập nhật
+  // Logger giúp debug trên Render dễ hơn
   private readonly logger = new Logger(ReviewsService.name);
 
   constructor(
-    @InjectModel(Review.name) private reviewModel: Model<Review>,
-    private readonly httpService: HttpService
+    @InjectModel(Review.name) private reviewModel: Model<ReviewDocument>,
+    private readonly httpService: HttpService,
   ) {}
 
-  // --- 1. Hàm gọi AI (Giữ nguyên) ---
+  // --- 1. Hàm gọi AI (ĐÃ SỬA LỖI URL) ---
   async analyzeSentiment(content: string) {
+    // [QUAN TRỌNG] Lấy URL từ biến môi trường, fallback về localhost nếu chạy local
+    const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+    
+    // [LOG] In ra để kiểm tra xem trên Render nó đang dùng link nào
+    this.logger.log(`🔍 Calling AI Sentiment at: ${aiUrl}/sentiment`);
+
     try {
-      const pythonApiUrl = 'http://127.0.0.1:5000/sentiment';
-      const response = await lastValueFrom(
-        this.httpService.post(pythonApiUrl, { review: content })
+      const response = await firstValueFrom(
+        this.httpService.post(`${aiUrl}/sentiment`, { review: content })
       );
       return response.data; 
     } catch (error) {
-      this.logger.error(`Lỗi AI Service: ${error.message}`);
+      this.logger.error(`⚠️ Lỗi AI Service: ${error.message}`);
+      // Nếu AI chết, trả về kết quả mặc định để không làm lỗi tính năng Review
       return { label: 'neutral', score: 0.5 };
     }
   }
 
-  // --- 2. Hàm tạo mới (Giữ nguyên) ---
+  // --- 2. Hàm tạo mới Review ---
   async create(createReviewDto: CreateReviewDto): Promise<Review> {
+    // Gọi AI phân tích trước khi lưu
     const aiResult = await this.analyzeSentiment(createReviewDto.noiDung);
+    
     const newReviewData = {
       ...createReviewDto,
       aiSentimentLabel: aiResult.label,
       aiSentimentScore: aiResult.score,
+      createdAt: new Date(), // Đảm bảo có thời gian tạo
     };
+    
     const createdReview = new this.reviewModel(newReviewData);
     return createdReview.save();
   }
 
-  // --- 3. Hàm tìm kiếm (Giữ nguyên) ---
+  // --- 3. Hàm tìm kiếm theo URL nhà hàng ---
   async findByRestaurantUrl(url: string): Promise<Review[]> {
     if (!url) return [];
-    return this.reviewModel.find({ urlGoc: url }).exec();
+    // Sắp xếp review mới nhất lên đầu
+    return this.reviewModel.find({ urlGoc: url }).sort({ createdAt: -1 }).exec();
   }
 
-  // --- [MỚI] 4. Hàm QUÉT VÀ CẬP NHẬT REVIEW CŨ ---
-  // Hàm này sẽ tìm các review chưa có nhãn cảm xúc và cập nhật chúng
+  // --- 4. Hàm Quét và Cập nhật Review cũ (Công cụ Admin) ---
   async updateAllReviewsSentiment() {
     this.logger.log('>>> BẮT ĐẦU CẬP NHẬT SENTIMENT CHO DỮ LIỆU CŨ...');
 
-    // Tìm tất cả review mà trường aiSentimentLabel chưa tồn tại
+    // Tìm các review chưa có nhãn
     const reviewsToUpdate = await this.reviewModel.find({
       aiSentimentLabel: { $exists: false } 
     }).exec();
@@ -67,22 +78,19 @@ export class ReviewsService {
       if (!review.noiDung) continue;
 
       try {
-        // Gọi AI phân tích
         const aiResult = await this.analyzeSentiment(review.noiDung);
 
-        // Cập nhật vào DB
         review.aiSentimentLabel = aiResult.label;
         review.aiSentimentScore = aiResult.score;
         await review.save();
 
         successCount++;
-        // Log tiến độ mỗi 10 review để đỡ rối mắt
         if (successCount % 10 === 0) {
-          this.logger.log(`   Đã cập nhật xong ${successCount} review...`);
+          this.logger.log(`   Running... Đã cập nhật ${successCount} review.`);
         }
       } catch (e) {
         failCount++;
-        this.logger.error(`   Lỗi khi cập nhật review ID ${review._id}: ${e.message}`);
+        this.logger.error(`   Fail ID ${review._id}: ${e.message}`);
       }
     }
 
