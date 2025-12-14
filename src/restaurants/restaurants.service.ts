@@ -141,6 +141,7 @@ export class RestaurantsService {
     userLat: string = '', 
     userLon: string = '',
     search: string = '',
+    city: string = '',
   ): Promise<any> {
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 32;
@@ -158,6 +159,17 @@ export class RestaurantsService {
 
     // 2. Setup Filter
     const filterQuery: any = {};
+    if (city) {
+      if (city === 'hanoi') {
+        filterQuery['diaChi'] = { 
+          $regex: /Hà Nội|Ha Noi|HN|Hanoi|Ba Đình|Ba Dinh|Hoàn Kiếm|Hoan Kiem|Tây Hồ|Tay Ho|Long Biên|Long Bien|Cầu Giấy|Cau Giay|Đống Đa|Dong Da|Hai Bà Trưng|Hai Ba Trung|Hoàng Mai|Hoang Mai|Thanh Xuân|Thanh Xuan|Sóc Sơn|Soc Son|Đông Anh|Dong Anh|Gia Lâm|Gia Lam|Nam Từ Liêm|Nam Tu Liem|Bắc Từ Liêm|Bac Tu Liem|Thanh Trì|Thanh Tri|Hà Đông|Ha Dong|Sơn Tây|Son Tay/i 
+        }; 
+      } else if (city === 'hcmc') {
+        filterQuery['diaChi'] = { 
+          $regex: /Hồ Chí Minh|Ho Chi Minh|TP\.?\s?HCM|TPHCM|Sài Gòn|Sai Gon|HCM|Thủ Đức|Thu Duc|Gò Vấp|Go Vap|Bình Thạnh|Binh Thanh|Tân Bình|Tan Binh|Tân Phú|Tan Phu|Phú Nhuận|Phu Nhuan|Bình Tân|Binh Tan|Củ Chi|Cu Chi|Hóc Môn|Hoc Mon|Bình Chánh|Binh Chanh|Nhà Bè|Nha Be|Cần Giờ|Can Gio|Quận\s?1|District\s?1|Q\.?1|Quận\s?3|District\s?3|Q\.?3|Quận\s?4|District\s?4|Q\.?4|Quận\s?5|District\s?5|Q\.?5|Quận\s?6|District\s?6|Q\.?6|Quận\s?7|District\s?7|Q\.?7|Quận\s?8|District\s?8|Q\.?8|Quận\s?10|District\s?10|Q\.?10|Quận\s?11|District\s?11|Q\.?11|Quận\s?12|District\s?12|Q\.?12/i 
+        };
+      }
+    }
     const scoreFieldToCheck = sortField; 
     if (rating && rating !== 'all') {
       switch (rating) {

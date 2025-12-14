@@ -42,7 +42,8 @@ export class RestaurantsController {
     @Query('openNow') openNow: string,
     @Query('userLat') userLat: string, 
     @Query('userLon') userLon: string, 
-    @Query('search') search: string,   
+    @Query('search') search: string,
+    @Query('city') city: string,   
   ) {
     return this.restaurantsService.findAll(
       page, 
@@ -53,7 +54,8 @@ export class RestaurantsController {
       openNow, 
       userLat, 
       userLon,
-      search
+      search,
+      city,
     );
   }
 
