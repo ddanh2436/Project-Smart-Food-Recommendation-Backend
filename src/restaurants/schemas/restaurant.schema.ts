@@ -7,6 +7,8 @@ export type RestaurantDocument = HydratedDocument<Restaurant>;
 @Schema({ collection: 'restaurants' })
 export class Restaurant {
   @Prop() tenQuan: string;
+  @Prop({ index: true }) // Thêm index để tìm kiếm nhanh hơn
+  cityId: string;
   @Prop() diemTrungBinh: number;
   @Prop() diaChi: string;
   @Prop() gioMoCua: string;
