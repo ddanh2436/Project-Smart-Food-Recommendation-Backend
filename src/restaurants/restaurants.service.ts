@@ -301,6 +301,78 @@ export class RestaurantsService {
     return restaurant as Restaurant;
   }
 
+  /**
+   * Other places a diner looking at this one would plausibly consider.
+   *
+   * Ranked by how much of the restaurant's own tag set they share, preferring
+   * the same district, and ordered by the review-count-adjusted score so the
+   * suggestions are places that are actually good rather than merely similar.
+   */
+  async findSimilar(id: string, limit = 8) {
+    const source = await this.findOne(id);
+
+    // Tags are stored as the string form of a Python list, e.g.
+    // "['Hồ Chí Minh', 'Quận 1', 'Phở', 'Máy lạnh']".
+    const tags = this.parseTags(source.tags);
+    // The first two entries are city and district, which every neighbour
+    // shares and which therefore say nothing about similarity.
+    const descriptive = tags.slice(2).filter((t) => t.length > 1);
+    const district = tags[1];
+
+    if (descriptive.length === 0) {
+      return { data: [], basedOn: [] };
+    }
+
+    const candidates = await this.restaurantModel
+      .find({
+        _id: { $ne: new mongoose.Types.ObjectId(id) },
+        tags: { $regex: this.escapeRegex(descriptive[0]), $options: 'i' },
+      })
+      .limit(400)
+      .lean()
+      .exec();
+
+    const wanted = new Set(descriptive.map((t) => t.toLowerCase()));
+    const scored = candidates
+      .map((candidate) => {
+        const theirs = this.parseTags(candidate.tags);
+        const shared = theirs.filter((t) => wanted.has(t.toLowerCase())).length;
+        const sameDistrict =
+          district && theirs[1]
+            ? theirs[1].toLowerCase() === district.toLowerCase()
+            : false;
+        return {
+          ...candidate,
+          _similarity: shared + (sameDistrict ? 2 : 0),
+        };
+      })
+      .filter((candidate) => candidate._similarity > 0)
+      .sort(
+        (a, b) =>
+          b._similarity - a._similarity ||
+          ((b as any).diemTrungBinhAdj ?? 0) -
+            ((a as any).diemTrungBinhAdj ?? 0),
+      )
+      .slice(0, Math.min(limit, 20));
+
+    return {
+      data: scored,
+      basedOn: descriptive.slice(0, 4),
+      district: district ?? null,
+    };
+  }
+
+  /** Parse the stringified Python list the crawler stores in `tags`. */
+  private parseTags(raw: unknown): string[] {
+    if (Array.isArray(raw)) return raw.map(String);
+    if (typeof raw !== 'string' || !raw.trim()) return [];
+    return raw
+      .replace(/^\[|\]$/g, '')
+      .split(',')
+      .map((part) => part.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+  }
+
   /** Restaurants near a point, for a "near me" view. */
   async findNearby(lat: number, lon: number, radiusKm = 5, limit = 20) {
     const candidates = await this.restaurantModel
