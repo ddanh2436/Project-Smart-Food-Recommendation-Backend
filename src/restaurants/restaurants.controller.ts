@@ -128,6 +128,15 @@ export class RestaurantsController {
     );
   }
 
+  /** Places comparable to this one, for the end of a detail page. */
+  @Get(':id/similar')
+  findSimilar(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.restaurantsService.findSimilar(
+      id,
+      limit ? Number(limit) : 8,
+    );
+  }
+
   // Must stay last: a literal route declared after this would be captured by
   // the `:id` parameter instead.
   @Get(':id')
