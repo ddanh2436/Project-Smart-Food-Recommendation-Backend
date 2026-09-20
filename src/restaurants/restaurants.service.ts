@@ -20,6 +20,26 @@ const SORTABLE_SCORES: Record<SortField, string> = {
   diemGiaCa: 'diemGiaCa',
 };
 
+/**
+ * The field actually used to ORDER results, per requested score.
+ *
+ * Clients keep asking for `diemTrungBinh`; ordering silently uses the
+ * review-count-adjusted twin. This is deliberate: the six "Top ..." home
+ * sections ordered by the raw score and so showcased restaurants whose 10.0
+ * rests on one review. Swapping only the sort key means no client has to
+ * change, and the card still shows the raw score the source site reports.
+ *
+ * See RatingStatsService for how the adjusted values are produced.
+ */
+const ORDER_BY_ADJUSTED: Record<SortField, string> = {
+  diemTrungBinh: 'diemTrungBinhAdj',
+  diemKhongGian: 'diemKhongGianAdj',
+  diemViTri: 'diemViTriAdj',
+  diemChatLuong: 'diemChatLuongAdj',
+  diemPhucVu: 'diemPhucVuAdj',
+  diemGiaCa: 'diemGiaCaAdj',
+};
+
 const RATING_RANGES: Record<string, { $gte?: number; $lt?: number }> = {
   gte9: { $gte: 9 },
   '8to9': { $gte: 8, $lt: 9 },
@@ -56,6 +76,43 @@ export class RestaurantsService {
     private readonly aiService: AiService,
   ) {}
 
+  /**
+   * Whether the adjusted score fields have been populated.
+   *
+   * Cached, because `findAll` consults it on every request and the answer only
+   * changes when the backfill runs. Once true it is never re-checked; while
+   * false it is re-checked at most once a minute, so a freshly run backfill is
+   * picked up without a redeploy.
+   */
+  private adjustedScoresReady = false;
+  private adjustedScoresCheckedAt = 0;
+
+  private async hasAdjustedScores(): Promise<boolean> {
+    if (this.adjustedScoresReady) return true;
+    if (Date.now() - this.adjustedScoresCheckedAt < 60_000) return false;
+
+    this.adjustedScoresCheckedAt = Date.now();
+    try {
+      const one = await this.restaurantModel
+        .exists({ diemTrungBinhAdj: { $gt: 0 } })
+        .exec();
+      this.adjustedScoresReady = Boolean(one);
+      if (!this.adjustedScoresReady) {
+        this.logger.warn(
+          'Adjusted scores are not populated, ordering by the raw score. ' +
+            'Run POST /restaurants/admin/rating-stats with an x-admin-token.',
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Could not check adjusted scores: ${
+          error instanceof Error ? error.message : error
+        }`,
+      );
+    }
+    return this.adjustedScoresReady;
+  }
+
   // -------------------------------------------------------------- reading
   async findAll(query: QueryRestaurantsDto) {
     const page = Math.max(query.page ?? 1, 1);
@@ -66,6 +123,12 @@ export class RestaurantsService {
     const sortField = SORTABLE_SCORES[query.sortBy as SortField]
       ? (query.sortBy as SortField)
       : 'diemTrungBinh';
+    // Order by the adjusted twin, but only once the backfill has populated it;
+    // otherwise every document would sort as 0 and the listing would be
+    // arbitrary. `orderField` therefore falls back to the raw score.
+    const orderField = (await this.hasAdjustedScores())
+      ? ORDER_BY_ADJUSTED[sortField]
+      : sortField;
 
     const filter: mongoose.FilterQuery<RestaurantDocument> = {};
 
@@ -135,7 +198,7 @@ export class RestaurantsService {
         this.restaurantModel.countDocuments(filter).exec(),
         this.restaurantModel
           .find(filter)
-          .sort({ [sortField]: order })
+          .sort({ [orderField]: order })
           .skip(skip)
           .limit(limit)
           .lean()
@@ -180,7 +243,7 @@ export class RestaurantsService {
       if (query.order === 'asc' && query.sortBy) {
         candidates.sort(
           (a, b) =>
-            ((a as any)[sortField] ?? 0) - ((b as any)[sortField] ?? 0),
+            ((a as any)[orderField] ?? 0) - ((b as any)[orderField] ?? 0),
         );
       } else {
         // Preserve the AI's relevance order by default.
@@ -201,8 +264,8 @@ export class RestaurantsService {
       candidates.sort(
         (a, b) =>
           order === 1
-            ? ((a as any)[sortField] ?? 0) - ((b as any)[sortField] ?? 0)
-            : ((b as any)[sortField] ?? 0) - ((a as any)[sortField] ?? 0),
+            ? ((a as any)[orderField] ?? 0) - ((b as any)[orderField] ?? 0)
+            : ((b as any)[orderField] ?? 0) - ((a as any)[orderField] ?? 0),
       );
     }
 
