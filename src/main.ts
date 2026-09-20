@@ -46,7 +46,19 @@ async function bootstrap() {
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      transformOptions: { enableImplicitConversion: true },
+      /**
+       * Implicit conversion is OFF on purpose.
+       *
+       * It converts a query string to the property's reflected type, and for a
+       * boolean that means `Boolean('false')` -- which is `true`. So
+       * `?openNow=false` arrived as `true`, silently switching the restaurant
+       * listing into its open-now path: the page count dropped from 179 to 42
+       * and 4,366 restaurants became unreachable. `?openNow=0` did the same.
+       *
+       * Every DTO that needs coercion declares it explicitly with `@Type()`
+       * or `@Transform()`, which is both safer and visible at the field.
+       */
+      transformOptions: { enableImplicitConversion: false },
     }),
   );
 

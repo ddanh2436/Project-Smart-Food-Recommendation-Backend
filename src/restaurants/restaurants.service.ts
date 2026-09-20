@@ -215,11 +215,21 @@ export class RestaurantsService {
     }
 
     // ---- bounded in-memory path ----------------------------------------
+    const inMemoryLimit = aiRank ? aiRank.size : MAX_IN_MEMORY;
     let candidates = await this.restaurantModel
       .find(filter)
-      .limit(aiRank ? aiRank.size : MAX_IN_MEMORY)
+      .limit(inMemoryLimit)
       .lean()
       .exec();
+
+    if (!aiRank && candidates.length === MAX_IN_MEMORY) {
+      // Truncation would quietly drop restaurants from the result count, so
+      // say so instead of letting the page total silently understate reality.
+      this.logger.warn(
+        `In-memory path hit the ${MAX_IN_MEMORY}-document cap; results are ` +
+          `truncated. Precompute opening hours into a queryable field.`,
+      );
+    }
 
     if (hasCoordinates) {
       candidates = candidates.map((restaurant) => ({
@@ -520,6 +530,18 @@ export class RestaurantsService {
 
 /**
  * Ceiling on documents pulled into memory for distance/open-now processing.
- * Large enough to cover the dataset, small enough to bound memory use.
+ *
+ * Opening hours are free text and coordinates are loose fields, so neither can
+ * be filtered in the Mongo query; those two paths need documents in memory.
+ *
+ * This was 3,000 against a 5,707-row collection, so an open-now request
+ * silently considered barely half the data and the rest simply did not exist
+ * as far as the user was concerned. The cap now sits above the collection
+ * size, and hitting it is logged rather than passing unnoticed.
+ *
+ * At roughly 1KB per lean document this is about 8MB, which is fine on
+ * Render's 512MB free tier. If the collection grows past this, the real fix is
+ * to precompute opening hours into a queryable field rather than raising the
+ * number again.
  */
-const MAX_IN_MEMORY = 3000;
+const MAX_IN_MEMORY = 8000;

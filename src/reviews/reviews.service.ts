@@ -7,6 +7,15 @@ import { Review, ReviewDocument } from './schemas/review.schema';
 
 /** How many reviews go to the AI service in one batch during a backfill. */
 const BACKFILL_BATCH_SIZE = 64;
+
+/**
+ * The confidence the AI client reports when it could not reach the model.
+ * A genuine prediction is essentially never exactly this value.
+ */
+const PLACEHOLDER_SCORE = 0.5;
+
+/** Neutral labels, across the old and current backend spellings. */
+const NEUTRAL_LABELS = ['neutral', 'NEU', 'LABEL_1'];
 /** Cap on how many reviews a single insights request analyses. */
 const INSIGHTS_LIMIT = 300;
 
@@ -30,15 +39,39 @@ export class ReviewsService {
   ): Promise<Review> {
     const sentiment = await this.aiService.sentiment(createReviewDto.noiDung);
 
+    /**
+     * Only persist a label the model actually produced.
+     *
+     * The AI client returns a neutral placeholder when the service is
+     * unreachable, and that used to be written straight to the document. The
+     * result was permanent: a glowing review posted while the AI Space was
+     * cold-starting was stored as "neutral" forever, because the backfill only
+     * looks for rows with *no* label. 62 reviews in production ended up this
+     * way, including genuinely positive ones.
+     *
+     * Leaving the fields unset instead means the row is simply unlabelled, and
+     * the next backfill run picks it up.
+     */
     const created = new this.reviewModel({
       ...createReviewDto,
       // Sentiment is assigned server-side from the AI service. It is not read
       // from the request body, so a client cannot label its own review.
-      aiSentimentLabel: sentiment.label,
-      aiSentimentScore: sentiment.score,
+      ...(sentiment.available === false
+        ? {}
+        : {
+            aiSentimentLabel: sentiment.label,
+            aiSentimentScore: sentiment.score,
+          }),
       authorId: author?.id,
       authorName: author?.name,
     });
+
+    if (sentiment.available === false) {
+      this.logger.warn(
+        'AI sentiment unavailable; review saved unlabelled and will be ' +
+          'picked up by the next backfill run.',
+      );
+    }
 
     return created.save();
   }
@@ -128,6 +161,21 @@ export class ReviewsService {
           { aiSentimentLabel: { $exists: false } },
           { aiSentimentLabel: null },
           { aiSentimentLabel: '' },
+          /**
+           * Rows written with the old AI-failure placeholder.
+           *
+           * Both the previous backend and this one returned
+           * `{ label: 'neutral' | 'NEU', score: 0.5 }` when the AI service was
+           * unreachable, and stored it. A real model output is essentially
+           * never exactly 0.5, so that exact value combined with a neutral
+           * label identifies a failure rather than a verdict. Re-processing
+           * them fixes reviews that were mislabelled through no fault of
+           * their own.
+           */
+          {
+            aiSentimentScore: PLACEHOLDER_SCORE,
+            aiSentimentLabel: { $in: NEUTRAL_LABELS },
+          },
         ],
         noiDung: { $exists: true, $ne: '' },
       })
