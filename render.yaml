@@ -1,0 +1,41 @@
+# Render blueprint for the VietNomNom API.
+# Create via Render Dashboard > New > Blueprint, pointing at this repo.
+services:
+  - type: web
+    name: vietnomnom-api
+    runtime: node
+    plan: free
+    region: singapore          # closest region to Vietnamese users
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Secrets are marked sync:false so Render prompts for them instead of
+      # storing them in this file. Never commit real values here.
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true     # Render generates a strong value once
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: AI_SERVICE_URL
+        sync: false             # https://<user>-<space>.hf.space
+      - key: FRONTEND_URL
+        sync: false             # https://<project>.vercel.app
+      - key: BACKEND_URL
+        sync: false             # https://vietnomnom-api.onrender.com
+      - key: CORS_ORIGINS
+        sync: false             # comma-separated, usually same as FRONTEND_URL
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d

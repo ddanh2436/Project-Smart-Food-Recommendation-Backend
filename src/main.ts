@@ -1,22 +1,102 @@
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import { Logger, ValidationPipe } from '@nestjs/common';
+import helmet from 'helmet';
+import compression from 'compression';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  console.log("========================================");
-  console.log("🔍 DEBUG ENV VARIABLES (RENDER):");
-  console.log("👉 PORT:", process.env.PORT);
-  console.log("👉 AI_SERVICE_URL:", process.env.AI_SERVICE_URL); // Quan trọng nhất
-  console.log("👉 FRONTEND_URL:", process.env.FRONTEND_URL);
-  console.log("========================================");
-  app.useGlobalPipes(new ValidationPipe()); // Sử dụng ValidationPipe toàn cục
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const config = app.get(ConfigService);
+  const logger = new Logger('Bootstrap');
+
+  /**
+   * Fail fast on missing configuration.
+   *
+   * Without this the app booted happily with no MONGODB_URI and only fell over
+   * on the first request, which on Render looks like a healthy deploy serving
+   * 500s. The old startup instead printed every environment variable — including
+   * secrets — straight into the logs.
+   */
+  const required = ['MONGODB_URI', 'JWT_SECRET', 'JWT_REFRESH_SECRET'];
+  const missing = required.filter((key) => !config.get<string>(key));
+  if (missing.length > 0) {
+    logger.error(
+      `Missing required environment variables: ${missing.join(', ')}. ` +
+        `See .env.example.`,
+    );
+    process.exit(1);
+  }
+  if (config.get<string>('JWT_SECRET') === config.get<string>('JWT_REFRESH_SECRET')) {
+    logger.error(
+      'JWT_SECRET and JWT_REFRESH_SECRET must differ, otherwise an access ' +
+        'token is accepted as a refresh token.',
+    );
+    process.exit(1);
+  }
+
+  app.use(helmet());
+  app.use(compression());
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      // Strip properties with no decorator on the DTO. Without this, extra
+      // fields in a request body flowed into Mongoose updates — a
+      // mass-assignment hole (e.g. posting `hashedRefreshToken`).
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
+
+  /**
+   * CORS from an explicit allow-list.
+   *
+   * `origin: '*'` together with `credentials: true` is invalid per the CORS
+   * spec — browsers reject the response outright — so the previous config was
+   * simultaneously wide open and broken for credentialed requests.
+   */
+  const allowedOrigins = (config.get<string>('CORS_ORIGINS') ?? '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  const frontendUrl = config.get<string>('FRONTEND_URL');
+  if (frontendUrl && !allowedOrigins.includes(frontendUrl)) {
+    allowedOrigins.push(frontendUrl.replace(/\/+$/, ''));
+  }
 
   app.enableCors({
-    origin: "*", 
-    methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+    origin: (origin, callback) => {
+      // Requests with no Origin header (curl, server-to-server, same-origin
+      // navigations) are not subject to CORS, so allow them through.
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin.replace(/\/+$/, ''))) {
+        return callback(null, true);
+      }
+      // Vercel preview deployments get a new hostname per commit, so match the
+      // project's preview pattern rather than listing every one.
+      if (/^https:\/\/[\w-]+\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+    },
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
+    maxAge: 86_400,
   });
-  await app.listen(process.env.PORT ?? 3001);
+
+  app.enableShutdownHooks();
+
+  const port = config.get<number>('PORT') ?? 3001;
+  // Bind to 0.0.0.0 explicitly: Render routes traffic to the container's
+  // external interface, not to localhost.
+  await app.listen(port, '0.0.0.0');
+
+  logger.log(`Listening on port ${port}`);
+  logger.log(`AI service: ${config.get<string>('AI_SERVICE_URL')}`);
+  logger.log(`Allowed origins: ${allowedOrigins.join(', ') || '(none)'}`);
 }
-bootstrap();
+
+void bootstrap();

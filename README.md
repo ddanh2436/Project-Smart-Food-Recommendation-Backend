@@ -1,98 +1,128 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# VietNomNom — Backend API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS + MongoDB API for the VietNomNom food recommendation app. It owns
+authentication, restaurant and review data, and orchestrates calls to the
+separate FastAPI AI service.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Deployment: see [DEPLOY.md](./DEPLOY.md).
 
-## Description
+## Architecture
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+Frontend (Vercel) ──▶ this API (Render) ──▶ MongoDB Atlas
+                            │
+                            └──▶ AI service (Hugging Face Spaces)
+                                 recommend · chat · sentiment · vision
 ```
 
-## Compile and run the project
+The API never talks to a model directly. Everything AI-related goes through
+`src/common/ai/ai.service.ts`, which is the single place that knows the AI
+service's URL, timeouts and failure behaviour. Every AI call degrades
+gracefully, because a free Hugging Face Space sleeps and cold-starts in ~50s —
+a sleeping model must never stop a user from browsing or posting a review.
+
+## Endpoints
+
+### Auth
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/auth/register` | 5/min per IP |
+| `POST` | `/auth/login` | 10/min per IP |
+| `POST` | `/auth/refresh` | takes only the refresh token; the user id comes from its verified payload |
+| `POST` | `/auth/logout` | clears the stored refresh-token hash 🔒 |
+| `GET` | `/auth/google` → `/auth/google/callback` | tokens returned in the URL **fragment** |
+| `GET` `PATCH` | `/auth/profile` | 🔒 |
+
+### Restaurants
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/restaurants` | validated query DTO; AI-ranked when `search` is set |
+| `GET` | `/restaurants/:id` | |
+| `GET` | `/restaurants/nearby` | `?lat=&lon=&radius=&limit=` |
+| `POST` | `/restaurants/chat` | conversational search, accepts `history` |
+| `POST` | `/restaurants/search-by-image` | 8MB limit, image MIME types only |
+
+### Reviews
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/reviews?url=` | |
+| `GET` | `/reviews/insights?url=` | aspect-level AI digest |
+| `POST` | `/reviews` | 5/min; auth optional, attributed when present |
+| `DELETE` | `/reviews/:id` | own reviews only 🔒 |
+| `POST` | `/reviews/migrate-sentiment` | requires `x-admin-token` 🔑 |
+
+### Health
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/` | service info |
+| `GET` | `/health` | database state + AI URL; used by Render, exempt from rate limiting |
+
+🔒 requires a Bearer access token · 🔑 requires `x-admin-token`
+
+## Configuration
+
+Copy `.env.example` to `.env`. The app **exits on boot** if `MONGODB_URI`,
+`JWT_SECRET` or `JWT_REFRESH_SECRET` is missing, and also if the two JWT secrets
+are identical — otherwise an access token would be accepted as a refresh token.
+
+## What was fixed
+
+This service had several serious defects. They are documented here so they are
+not reintroduced.
+
+**Security**
+
+- `GET/PATCH/DELETE /users/:id` had **no guards at all** — anyone could list
+  every user and modify or delete any account. Now authenticated, and restricted
+  to the caller's own record.
+- `POST /reviews/migrate-sentiment` was public, triggering a full-collection
+  scan plus one AI inference per row on demand. Now admin-only.
+- Refresh tokens were stored **in plaintext**. The `_hashData` helper existed but
+  was never called, while the refresh path compared with `bcrypt.compare` — so
+  refresh could never succeed *and* a database dump handed out live sessions.
+- `hashedRefreshToken` had **no `@Prop()` decorator**, so Mongoose silently
+  discarded it on every save. This is why users were logged out after 15 minutes.
+- `ValidationPipe` ran without `whitelist`, so unknown body fields flowed into
+  Mongoose updates — a mass-assignment hole. `CreateReviewDto` had no validation
+  decorators whatsoever, letting a client set its own AI sentiment label.
+- Google accounts got a password from `Math.random().toString(36).substring(7)`
+  — roughly 6 characters from a predictable PRNG. Now 32 random bytes.
+- Login threw `NotFoundException` for an unknown email and `Unauthorized` for a
+  wrong password, which allowed email enumeration. Both now return the same 401.
+- OAuth tokens were passed in the redirect **query string**, where they land in
+  server logs, browser history and the `Referer` header. Now in the fragment.
+- `origin: '*'` with `credentials: true` is invalid per the CORS spec, so the
+  config was simultaneously wide open and broken for credentialed requests.
+- Startup logged environment variables to stdout.
+- No rate limiting anywhere; no `helmet`.
+
+**Correctness**
+
+- `update(+id)` / `remove(+id)` coerced a Mongo ObjectId with `+`, producing
+  `NaN`. Both were unreachable stubs returning strings.
+- `isOpenNow` returned `false` for an empty hours field, silently hiding every
+  restaurant whose opening hours had not been crawled.
+- The user's raw search string went straight into a `$regex`, so `"c++("` threw
+  and a crafted input could cause catastrophic backtracking.
+- `?limit=999999` was accepted and passed to the database.
+
+**Performance**
+
+- Any `openNow=true` request loaded the **entire** collection into memory with
+  no cap. The in-memory path is now bounded and only used where Mongo genuinely
+  cannot express the query.
+- The sentiment backfill made one HTTP request and one `save()` per review in a
+  sequential loop. It now batches through the AI service and uses `bulkWrite`.
+- No indexes existed for the queries the app actually issues; every listing page
+  was a full scan plus an in-memory sort.
+
+## Development
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
+npm run start:dev     # watch mode, http://localhost:3001
+npm test              # unit tests
+npm run test:e2e      # needs a reachable MONGODB_URI
+npm run typecheck
+npm run lint
 ```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
