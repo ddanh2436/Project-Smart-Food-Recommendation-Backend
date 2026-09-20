@@ -8,12 +8,15 @@ import {
   Query,
   Body,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
+import { AdminGuard } from 'src/common/guards/admin.guard';
 import { RestaurantsService } from './restaurants.service';
+import { RatingStatsService } from './rating-stats.service';
 import { QueryRestaurantsDto } from './dto/query-restaurants.dto';
 import { ChatRestaurantsDto } from './dto/chat-restaurants.dto';
 
@@ -23,7 +26,30 @@ const ALLOWED_IMAGE_TYPES = /^image\/(jpeg|jpg|png|webp|heic|heif)$/i;
 
 @Controller('restaurants')
 export class RestaurantsController {
-  constructor(private readonly restaurantsService: RestaurantsService) {}
+  constructor(
+    private readonly restaurantsService: RestaurantsService,
+    private readonly ratingStatsService: RatingStatsService,
+  ) {}
+
+  /**
+   * Recompute `reviewCount` and the adjusted score fields.
+   *
+   * Run once after deploying, and again after any crawl that adds reviews.
+   * Admin-only: it rewrites every restaurant document.
+   *
+   * Declared before the `:id` route, or `admin` would be read as an id.
+   */
+  @UseGuards(AdminGuard)
+  @Post('admin/rating-stats')
+  recomputeRatingStats() {
+    return this.ratingStatsService.backfill();
+  }
+
+  @UseGuards(AdminGuard)
+  @Get('admin/rating-stats')
+  ratingStatsStatus() {
+    return this.ratingStatsService.status();
+  }
 
   /**
    * Image search.
