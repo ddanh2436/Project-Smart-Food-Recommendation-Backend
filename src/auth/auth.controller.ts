@@ -1,4 +1,3 @@
-// src/auth/auth.controller.ts
 import {
   Controller,
   Post,
@@ -10,89 +9,115 @@ import {
   Get,
   Res,
   Patch,
+  Logger,
 } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { ConfigService } from '@nestjs/config';
+import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
+import type { Request, Response } from 'express';
+import { AuthService, GoogleProfile } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshDto } from './dto/refresh.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
-import { Request } from 'express';
-import type { Response } from 'express'; // Import Response từ express
-import { AuthGuard } from '@nestjs/passport';
 import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
-// Interface mở rộng Request để TypeScript hiểu req.user
 interface RequestWithUser extends Request {
-  user: {
-    sub: string;
-    email: string;
-  };
+  user: { sub: string; email: string };
+}
+
+interface RequestWithGoogleUser extends Request {
+  user: GoogleProfile;
 }
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  private readonly logger = new Logger(AuthController.name);
 
-  // --- 1. GOOGLE LOGIN ---
+  constructor(
+    private authService: AuthService,
+    private configService: ConfigService,
+  ) {}
+
+  // ------------------------------------------------------------- Google
   @Get('google')
   @UseGuards(AuthGuard('google'))
-  async googleAuth(@Req() req) {
-    // Hàm này chỉ để kích hoạt Guard, Passport sẽ tự chuyển hướng sang Google
+  googleAuth(): void {
+    // Passport's guard performs the redirect to Google; nothing to do here.
   }
 
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
-  async googleAuthRedirect(@Req() req, @Res() res: Response) {
-    // 1. Xử lý đăng nhập, tạo Token
-    const { accessToken, refreshToken } = await this.authService.signInWithGoogle(req.user);
+  async googleAuthRedirect(
+    @Req() req: RequestWithGoogleUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    const frontendUrl = this.resolveFrontendUrl();
 
-    // 2. [QUAN TRỌNG] Xác định URL Frontend để chuyển hướng về
-    // Nếu chạy trên Render (có biến ENV), nó sẽ dùng link Vercel.
-    // Nếu chạy Local (không có biến ENV), nó sẽ dùng localhost:3000.
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    try {
+      const { accessToken, refreshToken } =
+        await this.authService.signInWithGoogle(req.user);
 
-    // [DEBUG LOG] In ra để kiểm tra trên Render Logs
-    console.log("🚀 Redirecting Google User to:", frontendUrl);
-
-    // 3. Chuyển hướng về Frontend kèm theo Token trên URL
-    res.redirect(
-      `${frontendUrl}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`,
-    );
+      /**
+       * Tokens are handed over in the URL *fragment*, not the query string.
+       *
+       * A query string is sent to the server, recorded in access logs, kept in
+       * browser history and leaked through the Referer header. A fragment never
+       * leaves the browser, and the callback page strips it from the address bar
+       * immediately after reading it.
+       */
+      const fragment = new URLSearchParams({
+        accessToken,
+        refreshToken,
+      }).toString();
+      res.redirect(`${frontendUrl}/auth/callback#${fragment}`);
+    } catch (error) {
+      this.logger.error(
+        `Google sign-in failed: ${error instanceof Error ? error.message : error}`,
+      );
+      res.redirect(`${frontendUrl}/auth?error=google_signin_failed`);
+    }
   }
 
-  // --- 2. ĐĂNG KÝ / ĐĂNG NHẬP THƯỜNG ---
+  // ------------------------------------------- Email / password sign-in
+  /**
+   * Stricter rate limits than the global default: these are the endpoints worth
+   * brute-forcing. 5 registrations and 10 login attempts per minute per IP.
+   */
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   register(@Body() registerDto: RegisterDto) {
     return this.authService.register(registerDto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
   }
 
-  // --- 3. ĐĂNG XUẤT & REFRESH TOKEN ---
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Req() req: RequestWithUser) {
-    const userId = req.user.sub;
-    return this.authService.logout(userId);
+    return this.authService.logout(req.user.sub);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(@Body() body: { userId: string; refreshToken: string }) {
-    return this.authService.refresh(body.userId, body.refreshToken);
+  refresh(@Body() body: RefreshDto) {
+    // The user id is taken from the verified token, not from the request body.
+    return this.authService.refresh(body.refreshToken);
   }
 
-  // --- 4. PROFILE USER (GET & UPDATE) ---
+  // --------------------------------------------------------------- Profile
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   getProfile(@Req() req: RequestWithUser) {
-    const userId = req.user.sub;
-    return this.authService.getProfile(userId);
+    return this.authService.getProfile(req.user.sub);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -101,7 +126,19 @@ export class AuthController {
     @Req() req: RequestWithUser,
     @Body() updateUserDto: UpdateUserDto,
   ) {
-    const userId = req.user.sub;
-    return this.authService.updateProfile(userId, updateUserDto);
+    return this.authService.updateProfile(req.user.sub, updateUserDto);
+  }
+
+  /**
+   * Where to send the browser after Google sign-in.
+   *
+   * Read through ConfigService rather than `process.env` directly so it honours
+   * the same configuration source as the rest of the app, and trailing slashes
+   * are trimmed so the redirect never contains a double slash.
+   */
+  private resolveFrontendUrl(): string {
+    const configured =
+      this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:3000';
+    return configured.replace(/\/+$/, '');
   }
 }

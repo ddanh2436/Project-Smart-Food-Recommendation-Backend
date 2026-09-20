@@ -1,372 +1,462 @@
-// src/restaurants/restaurants.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { CreateRestaurantDto } from './dto/create-restaurant.dto';
-import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose';
+import { AiService } from 'src/common/ai/ai.service';
+import { QueryRestaurantsDto, SortField } from './dto/query-restaurants.dto';
 import { Restaurant, RestaurantDocument } from './schemas/restaurant.schema';
-import { Model } from 'mongoose';
-import { HttpService } from '@nestjs/axios'; 
-import { firstValueFrom } from 'rxjs';
-import FormData from 'form-data'; // [MỚI] Cần cài: npm install form-data
 
-const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+/** Score fields a client is allowed to sort by. */
+const SORTABLE_SCORES: Record<SortField, string> = {
+  diemTrungBinh: 'diemTrungBinh',
+  diemKhongGian: 'diemKhongGian',
+  diemViTri: 'diemViTri',
+  diemChatLuong: 'diemChatLuong',
+  diemPhucVu: 'diemPhucVu',
+  diemGiaCa: 'diemGiaCa',
+};
+
+const RATING_RANGES: Record<string, { $gte?: number; $lt?: number }> = {
+  gte9: { $gte: 9 },
+  '8to9': { $gte: 8, $lt: 9 },
+  '7to8': { $gte: 7, $lt: 8 },
+  '6to7': { $gte: 6, $lt: 7 },
+  lt6: { $lt: 6 },
+};
+
+/**
+ * City address patterns.
+ *
+ * Kept as data rather than the two enormous inline regex literals the old
+ * findAll held, so adding a city is a one-line change.
+ */
+const CITY_PATTERNS: Record<string, RegExp> = {
+  hanoi:
+    /Hà Nội|Ha Noi|Hanoi|Ba Đình|Ba Dinh|Hoàn Kiếm|Hoan Kiem|Tây Hồ|Tay Ho|Long Biên|Long Bien|Cầu Giấy|Cau Giay|Đống Đa|Dong Da|Hai Bà Trưng|Hai Ba Trung|Hoàng Mai|Hoang Mai|Thanh Xuân|Thanh Xuan|Sóc Sơn|Soc Son|Đông Anh|Dong Anh|Gia Lâm|Gia Lam|Nam Từ Liêm|Nam Tu Liem|Bắc Từ Liêm|Bac Tu Liem|Thanh Trì|Thanh Tri|Hà Đông|Ha Dong|Sơn Tây|Son Tay/i,
+  hcmc:
+    /Hồ Chí Minh|Ho Chi Minh|TP\.?\s?HCM|TPHCM|Sài Gòn|Sai Gon|\bHCM\b|Thủ Đức|Thu Duc|Gò Vấp|Go Vap|Bình Thạnh|Binh Thanh|Tân Bình|Tan Binh|Tân Phú|Tan Phu|Phú Nhuận|Phu Nhuan|Bình Tân|Binh Tan|Củ Chi|Cu Chi|Hóc Môn|Hoc Mon|Bình Chánh|Binh Chanh|Nhà Bè|Nha Be|Cần Giờ|Can Gio|(?:Quận|District|Q\.?)\s?(?:1|3|4|5|6|7|8|10|11|12)\b/i,
+  danang:
+    /Đà Nẵng|Da Nang|Hải Châu|Hai Chau|Thanh Khê|Thanh Khe|Sơn Trà|Son Tra|Ngũ Hành Sơn|Ngu Hanh Son|Liên Chiểu|Lien Chieu|Cẩm Lệ|Cam Le|Hòa Vang|Hoa Vang/i,
+};
+
+/** Hard ceiling on page size, so `?limit=999999` cannot be used to dump the DB. */
+const MAX_LIMIT = 100;
 
 @Injectable()
 export class RestaurantsService {
+  private readonly logger = new Logger(RestaurantsService.name);
+
   constructor(
     @InjectModel(Restaurant.name)
     private restaurantModel: Model<RestaurantDocument>,
-    private readonly httpService: HttpService,
+    private readonly aiService: AiService,
   ) {}
 
-  create(createRestaurantDto: CreateRestaurantDto) {
-    return 'This action adds a new restaurant';
-  }
+  // -------------------------------------------------------------- reading
+  async findAll(query: QueryRestaurantsDto) {
+    const page = Math.max(query.page ?? 1, 1);
+    const limit = Math.min(Math.max(query.limit ?? 32, 1), MAX_LIMIT);
+    const skip = (page - 1) * limit;
+    const order = query.order === 'asc' ? 1 : -1;
 
-  // [MỚI] HÀM XỬ LÝ SEARCH ẢNH
-  async searchByImage(file: Express.Multer.File) {
-    try {
-      if (!file) throw new Error("Không có file được tải lên");
+    const sortField = SORTABLE_SCORES[query.sortBy as SortField]
+      ? (query.sortBy as SortField)
+      : 'diemTrungBinh';
 
-      const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
-      
-      // [QUAN TRỌNG] Log ra console để xem Backend đang kết nối đi đâu
-      console.log("------------------------------------------------");
-      console.log("📸 ĐANG GỌI AI SERVICE...");
-      console.log("🔗 URL được dùng:", aiUrl);
-      console.log("❓ Có phải localhost không?:", aiUrl.includes('127.0.0.1') ? "CÓ (LỖI)" : "KHÔNG (OK)");
-      console.log("------------------------------------------------");
-      
-      const formData = new FormData();
-      formData.append('file', Buffer.from(file.buffer), file.originalname);
+    const filter: mongoose.FilterQuery<RestaurantDocument> = {};
 
-      const aiResponse = await firstValueFrom(
-        this.httpService.post(`${aiUrl}/predict-food`, formData, {
-          headers: {
-            ...formData.getHeaders(),
-          },
-        })
-      );
-
-      const foodName = aiResponse.data.food_name;
-      console.log('AI Detected:', foodName);
-
-      if (!foodName) {
-        return { data: [], message: 'Không nhận diện được món ăn' };
-      }
-
-      // 2. [QUAN TRỌNG] Gọi hàm findAll lấy số lượng lớn (50 quán)
-      // Lý do: Để đảm bảo không bỏ sót quán ngon nào chỉ vì AI xếp hạng độ liên quan khác
-      const result = await this.findAll(
-        1,               // page
-        50,              // limit: Lấy 50 để lọc
-        'diemTrungBinh', // sortBy
-        'desc',          // order
-        'all',           // rating
-        'false',         // openNow
-        '', '',          // lat, lon (Tạm để trống, có thể update nếu cần GPS)
-        foodName         // search query (Tên món AI đoán)
-      );
-
-      // 3. [QUAN TRỌNG] Tự sắp xếp lại theo điểm trung bình (Cao -> Thấp)
-      let topRestaurants = result.data || [];
-      topRestaurants.sort((a: any, b: any) => (b.diemTrungBinh || 0) - (a.diemTrungBinh || 0));
-
-      // 4. [QUAN TRỌNG] Cắt lấy đúng Top 5 quán ngon nhất
-      topRestaurants = topRestaurants.slice(0, 5);
-
-      return {
-        data: topRestaurants, // Trả về danh sách 5 quán xịn nhất
-        detectedFood: foodName,
-        total: topRestaurants.length
-      };
-
-    } catch (error) {
-      console.error('Lỗi search by image:', error.message);
-      return { data: [], message: 'Lỗi xử lý hình ảnh' };
-    }
-  }
-
-  // --- CÁC HÀM CŨ GIỮ NGUYÊN BÊN DƯỚI ---
-
-  private checkIsOpen(gioMoCua: string): boolean {
-    if (!gioMoCua) return false;
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const ranges = gioMoCua.split(/[|,]/).map(r => r.trim());
-
-    for (const range of ranges) {
-      const parts = range.split('-').map(p => p.trim());
-      if (parts.length !== 2) continue;
-      const [startStr, endStr] = parts;
-      const toMinutes = (timeStr: string) => {
-        const [h, m] = timeStr.split(':').map(Number);
-        return h * 60 + m;
-      };
-      const start = toMinutes(startStr);
-      const end = toMinutes(endStr);
-
-      if (start <= end) {
-        if (currentMinutes >= start && currentMinutes <= end) return true;
-      } else {
-        if (currentMinutes >= start || currentMinutes <= end) return true;
-      }
-    }
-    return false;
-  }
-
-  private getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
-    const R = 6371; 
-    const dLat = this.deg2rad(lat2 - lat1);
-    const dLon = this.deg2rad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.deg2rad(lat1)) * Math.cos(this.deg2rad(lat2)) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; 
-  }
-
-  private deg2rad(deg: number) {
-    return deg * (Math.PI / 180);
-  }
-
-  async findAll(
-    page: number = 1, 
-    limit: number = 32,
-    sortBy: string = 'diemTrungBinh',
-    order: string = 'desc',
-    rating: string = 'all',
-    openNow: string = 'false',
-    userLat: string = '', 
-    userLon: string = '',
-    search: string = '',
-    city: string = '',
-  ): Promise<any> {
-    const pageNum = Number(page) || 1;
-    const limitNum = Number(limit) || 32;
-    const skip = (pageNum - 1) * limitNum;
-
-    // 1. Setup Sort
-    const sortOptions: any = {};
-    const allowedSortFields = [
-      'diemTrungBinh', 'diemKhongGian', 'diemViTri', 
-      'diemChatLuong', 'diemPhucVu', 'diemGiaCa'
-    ];
-    const sortField = (allowedSortFields.includes(sortBy) && sortBy !== 'default') ? sortBy : 'diemTrungBinh';
-    const sortDirection = order === 'asc' ? 1 : -1;
-    sortOptions[sortField] = sortDirection;
-
-    // 2. Setup Filter
-    const filterQuery: any = {};
-    if (city) {
-      if (city === 'hanoi') {
-        filterQuery['diaChi'] = { 
-          $regex: /Hà Nội|Ha Noi|HN|Hanoi|Ba Đình|Ba Dinh|Hoàn Kiếm|Hoan Kiem|Tây Hồ|Tay Ho|Long Biên|Long Bien|Cầu Giấy|Cau Giay|Đống Đa|Dong Da|Hai Bà Trưng|Hai Ba Trung|Hoàng Mai|Hoang Mai|Thanh Xuân|Thanh Xuan|Sóc Sơn|Soc Son|Đông Anh|Dong Anh|Gia Lâm|Gia Lam|Nam Từ Liêm|Nam Tu Liem|Bắc Từ Liêm|Bac Tu Liem|Thanh Trì|Thanh Tri|Hà Đông|Ha Dong|Sơn Tây|Son Tay/i 
-        }; 
-      } else if (city === 'hcmc') {
-        filterQuery['diaChi'] = { 
-          $regex: /Hồ Chí Minh|Ho Chi Minh|TP\.?\s?HCM|TPHCM|Sài Gòn|Sai Gon|HCM|Thủ Đức|Thu Duc|Gò Vấp|Go Vap|Bình Thạnh|Binh Thanh|Tân Bình|Tan Binh|Tân Phú|Tan Phu|Phú Nhuận|Phu Nhuan|Bình Tân|Binh Tan|Củ Chi|Cu Chi|Hóc Môn|Hoc Mon|Bình Chánh|Binh Chanh|Nhà Bè|Nha Be|Cần Giờ|Can Gio|Quận\s?1|District\s?1|Q\.?1|Quận\s?3|District\s?3|Q\.?3|Quận\s?4|District\s?4|Q\.?4|Quận\s?5|District\s?5|Q\.?5|Quận\s?6|District\s?6|Q\.?6|Quận\s?7|District\s?7|Q\.?7|Quận\s?8|District\s?8|Q\.?8|Quận\s?10|District\s?10|Q\.?10|Quận\s?11|District\s?11|Q\.?11|Quận\s?12|District\s?12|Q\.?12/i 
-        };
-      }
-    }
-    const scoreFieldToCheck = sortField; 
-    if (rating && rating !== 'all') {
-      switch (rating) {
-        case 'gte9': filterQuery[scoreFieldToCheck] = { $gte: 9.0 }; break;
-        case '8to9': filterQuery[scoreFieldToCheck] = { $gte: 8.0, $lt: 9.0 }; break;
-        case '7to8': filterQuery[scoreFieldToCheck] = { $gte: 7.0, $lt: 8.0 }; break;
-        case '6to7': filterQuery[scoreFieldToCheck] = { $gte: 6.0, $lt: 7.0 }; break;
-        case 'lt6': filterQuery[scoreFieldToCheck] = { $lt: 6.0 }; break;
-      }
+    if (query.city && CITY_PATTERNS[query.city]) {
+      filter.diaChi = { $regex: CITY_PATTERNS[query.city] };
     }
 
-    // Logic gọi AI (Text Search)
-    let aiIndexMap: Record<string, number> = {};
-    let isAiSearch = false;
-    if (search && search.trim() !== '') {
-      isAiSearch = true;
-      try {
-        const payload = {
-            query: search,
-            user_gps: (userLat && userLon) ? [parseFloat(userLat), parseFloat(userLon)] : null
-        };
-        const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
-        const aiResponse = await firstValueFrom(
-          this.httpService.post(`${aiUrl}/recommend`, payload)
-        );
-        
-        const recommendedItems = aiResponse.data.scores || [];
-        const recommendedIds = recommendedItems.map((item: any) => item.id);
+    if (query.rating && query.rating !== 'all' && RATING_RANGES[query.rating]) {
+      filter[sortField] = RATING_RANGES[query.rating];
+    }
 
-        if (recommendedIds.length > 0) {
-           filterQuery['_id'] = { $in: recommendedIds }; 
-           recommendedItems.forEach((item: any, index: number) => {
-               aiIndexMap[item.id] = index;
-           });
-        } else {
-           return { data: [], total: 0, currentPage: pageNum, totalPages: 0 }; 
+    const hasCoordinates =
+      query.userLat !== undefined && query.userLon !== undefined;
+
+    // ---- AI-ranked text search -----------------------------------------
+    let aiRank: Map<string, number> | null = null;
+    let aiSortBy: string | null = null;
+
+    if (query.search?.trim()) {
+      const aiResponse = await this.aiService.recommend({
+        query: query.search.trim(),
+        user_gps: hasCoordinates
+          ? [query.userLat as number, query.userLon as number]
+          : null,
+        city_filter: query.city ?? null,
+        limit: 200,
+      });
+
+      if (aiResponse) {
+        const ids = (aiResponse.scores ?? [])
+          .map((item) => item.id)
+          .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+        if (ids.length === 0) {
+          return this.emptyPage(page, sortField, query.order);
         }
-      } catch (error) {
-        console.error("Lỗi kết nối AI:", error.message);
-        filterQuery['tenQuan'] = { $regex: search, $options: 'i' };
-      }
-    }
 
-    // 3. Xác định chế độ xử lý
-    const isOpenNowBool = openNow === 'true';
-    const isSortDistance = sortBy === 'distance' && userLat && userLon;
-    const isManualProcessing = isOpenNowBool || isSortDistance || isAiSearch;
-
-    let data: any[] = [];
-    let total = 0;
-
-    if (isManualProcessing) {
-      let allCandidates = await this.restaurantModel
-        .find(filterQuery)
-        .lean()
-        .exec();
-
-      if (userLat && userLon) {
-        const uLat = parseFloat(userLat);
-        const uLon = parseFloat(userLon);
-        
-        allCandidates = allCandidates.map((res: any) => {
-          const parseCoord = (val: any) => {
-            if (typeof val === 'number') return val;
-            if (typeof val === 'string') return parseFloat(val.replace(',', '.'));
-            return 0;
-          };
-          const resLat = parseCoord(res.lat);
-          const resLon = parseCoord(res.lon);
-          const dist = (resLat && resLon) ? this.getDistanceFromLatLonInKm(uLat, uLon, resLat, resLon) : 99999;
-          return { ...res, distance: dist };
-        });
-      }
-
-      if (isOpenNowBool) {
-        allCandidates = allCandidates.filter((res: any) => this.checkIsOpen(res.gioMoCua));
-      }
-
-     if (isAiSearch && sortBy === 'diemTrungBinh') {
-         allCandidates.sort((a: any, b: any) => {
-            // [FIX] Nếu user chọn Tăng dần (ASC), sort theo điểm số thực tế
-            if (order === 'asc') {
-                return (a.diemTrungBinh || 0) - (b.diemTrungBinh || 0);
-            }
-
-            // [FIX] Mặc định (DESC) hoặc không chọn: Ưu tiên độ phù hợp AI (Index thấp đứng trước)
-            const idxA = aiIndexMap[a._id.toString()] ?? 9999;
-            const idxB = aiIndexMap[b._id.toString()] ?? 9999;
-            return idxA - idxB;
-         });
-
-      } else if (isSortDistance) {
-         allCandidates.sort((a: any, b: any) => {
-            return order === 'asc' ? (a.distance - b.distance) : (b.distance - a.distance);
-         });
+        aiRank = new Map(ids.map((id, index) => [id, index]));
+        aiSortBy = aiResponse.sort_by;
+        filter._id = { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) };
       } else {
-         allCandidates.sort((a: any, b: any) => {
-            const valA = a[sortField] || 0;
-            const valB = b[sortField] || 0;
-            return sortDirection === 1 ? valA - valB : valB - valA;
-         });
+        // AI service unreachable: fall back to a plain name search rather than
+        // returning nothing. `escapeRegex` matters here — the raw user string
+        // used to go straight into $regex, so a query like "c++(" threw a
+        // regex-compile error and a crafted one could cause catastrophic
+        // backtracking against every document.
+        this.logger.warn('AI search unavailable, falling back to name match');
+        filter.tenQuan = {
+          $regex: this.escapeRegex(query.search.trim()),
+          $options: 'i',
+        };
       }
-
-      total = allCandidates.length;
-      data = allCandidates.slice(skip, skip + limitNum);
-    } else {
-      total = await this.restaurantModel.countDocuments(filterQuery).exec();
-      data = await this.restaurantModel
-        .find(filterQuery)
-        .sort(sortOptions)
-        .skip(skip)
-        .limit(limitNum)
-        .exec();
     }
 
+    /**
+     * Distance sorting and open-now filtering cannot be expressed in this
+     * schema's Mongo query (coordinates are loose fields and opening hours are
+     * free text), so they need documents in memory. The old code did that for
+     * *any* search and with no cap, reading the entire collection on a request
+     * as ordinary as `openNow=true`. Now the in-memory path is bounded.
+     */
+    const needsInMemory =
+      query.openNow === true || (query.sortBy === 'distance' && hasCoordinates);
+
+    if (!needsInMemory && !aiRank) {
+      const [total, data] = await Promise.all([
+        this.restaurantModel.countDocuments(filter).exec(),
+        this.restaurantModel
+          .find(filter)
+          .sort({ [sortField]: order })
+          .skip(skip)
+          .limit(limit)
+          .lean()
+          .exec(),
+      ]);
+      return {
+        data,
+        total,
+        currentPage: page,
+        totalPages: Math.ceil(total / limit) || 1,
+        sortBy: query.sortBy ?? sortField,
+        order: query.order ?? 'desc',
+      };
+    }
+
+    // ---- bounded in-memory path ----------------------------------------
+    let candidates = await this.restaurantModel
+      .find(filter)
+      .limit(aiRank ? aiRank.size : MAX_IN_MEMORY)
+      .lean()
+      .exec();
+
+    if (hasCoordinates) {
+      candidates = candidates.map((restaurant) => ({
+        ...restaurant,
+        distance: this.distanceKm(
+          query.userLat as number,
+          query.userLon as number,
+          this.parseCoordinate(restaurant.lat),
+          this.parseCoordinate(restaurant.lon),
+        ),
+      }));
+    }
+
+    if (query.openNow) {
+      candidates = candidates.filter((restaurant) =>
+        this.isOpenNow(restaurant.gioMoCua),
+      );
+    }
+
+    if (aiRank && query.sortBy !== 'distance') {
+      if (query.order === 'asc' && query.sortBy) {
+        candidates.sort(
+          (a, b) =>
+            ((a as any)[sortField] ?? 0) - ((b as any)[sortField] ?? 0),
+        );
+      } else {
+        // Preserve the AI's relevance order by default.
+        candidates.sort(
+          (a, b) =>
+            (aiRank!.get(String(a._id)) ?? Number.MAX_SAFE_INTEGER) -
+            (aiRank!.get(String(b._id)) ?? Number.MAX_SAFE_INTEGER),
+        );
+      }
+    } else if (query.sortBy === 'distance') {
+      candidates.sort((a, b) =>
+        order === 1
+          ? ((a as any).distance ?? Infinity) - ((b as any).distance ?? Infinity)
+          : ((b as any).distance ?? -Infinity) -
+            ((a as any).distance ?? -Infinity),
+      );
+    } else {
+      candidates.sort(
+        (a, b) =>
+          order === 1
+            ? ((a as any)[sortField] ?? 0) - ((b as any)[sortField] ?? 0)
+            : ((b as any)[sortField] ?? 0) - ((a as any)[sortField] ?? 0),
+      );
+    }
+
+    const total = candidates.length;
     return {
-      data,
+      data: candidates.slice(skip, skip + limit),
       total,
-      currentPage: pageNum,
-      totalPages: Math.ceil(total / limitNum),
-      sortBy: sortBy,
-      order: order
+      currentPage: page,
+      totalPages: Math.ceil(total / limit) || 1,
+      sortBy: aiSortBy ?? query.sortBy ?? sortField,
+      order: query.order ?? 'desc',
     };
   }
 
   async findOne(id: string): Promise<Restaurant> {
-    const restaurant = await this.restaurantModel.findById(id).exec();
-    if (!restaurant) throw new NotFoundException(`Restaurant with ID ${id} not found`);
-    return restaurant;
-  }
-  update(id: number, updateRestaurantDto: UpdateRestaurantDto) { return `This action updates a #${id} restaurant`; }
-  remove(id: number) { return `This action removes a #${id} restaurant`; }
-
-  private getRandomReply(type: 'success' | 'notFound' | 'error', params?: { count?: number; keyword?: string }): string {
-    const { count, keyword } = params || {};
-
-    const templates = {
-      success: [
-        `Tuyệt vời! Mình tìm được ${count} quán "${keyword}" được đánh giá cao nhất cho bạn đây 👇`,
-        `Có ngay! Dưới đây là ${count} địa điểm bán "${keyword}" xịn xò nhất mà mình lọc được. Mời bạn thẩm! 😋`,
-        `Bingo! 🎯 Tìm thấy ${count} quán "${keyword}" cực phẩm. Bạn xem thử nhé!`,
-        `Dựa trên yêu cầu "${keyword}", đây là top ${count} quán "đỉnh của chóp" mình gợi ý cho bạn.`,
-        `Đã tìm ra! ${count} địa điểm này chắc chắn sẽ làm bạn hài lòng với món "${keyword}".`,
-        `Món "${keyword}" hả? Dễ ợt! Mình có ${count} gợi ý siêu chất lượng bên dưới này.`
-      ],
-      notFound: [
-        `Hic, tiếc quá! Mình lục tung dữ liệu mà không thấy quán nào bán "${keyword}". Hay bạn thử món khác xem? 🍜`,
-        `Rất tiếc, hiện tại mình chưa có dữ liệu về món "${keyword}". Bạn thử tìm "Phở", "Cơm tấm" xem sao nhé!`,
-        `Ca này khó! 😅 Mình không tìm thấy kết quả nào cho "${keyword}". Bạn kiểm tra lại chính tả hoặc thử từ khóa ngắn gọn hơn nhé.`,
-        `Hmm... Món này nghe lạ quá, mình chưa tìm thấy quán phù hợp. Bạn thử đổi món khác nhé?`
-      ],
-      error: [
-        `Ouch! Hệ thống đang bị "đau bụng" chút xíu. Bạn thử lại sau nhé! 🤒`,
-        `Xin lỗi, mình đang mất kết nối tạm thời. Bạn chờ chút rồi hỏi lại nha!`,
-        `Máy chủ đang bận, bạn vui lòng thử lại sau vài phút nhé!`
-      ]
-    };
-
-    const list = templates[type];
-    const randomIndex = Math.floor(Math.random() * list.length);
-    return list[randomIndex];
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      throw new BadRequestException(`Invalid restaurant id: ${id}`);
+    }
+    const restaurant = await this.restaurantModel.findById(id).lean().exec();
+    if (!restaurant) {
+      throw new NotFoundException(`Restaurant ${id} not found`);
+    }
+    return restaurant as Restaurant;
   }
 
-  async chatWithAI(message: string, userLat?: string, userLon?: string) {
-    try {
-      // 1. Gọi logic findAll lấy 50 quán để sort
-      const result = await this.findAll(
-        1, 50, 'diemTrungBinh', 'desc', 'all', 'false', userLat, userLon, message
-      );
+  /** Restaurants near a point, for a "near me" view. */
+  async findNearby(lat: number, lon: number, radiusKm = 5, limit = 20) {
+    const candidates = await this.restaurantModel
+      .find({ lat: { $exists: true }, lon: { $exists: true } })
+      .limit(MAX_IN_MEMORY)
+      .lean()
+      .exec();
 
-      // 2. Sort thủ công theo rating
-      let topRestaurants = result.data || [];
-      topRestaurants.sort((a: any, b: any) => (b.diemTrungBinh || 0) - (a.diemTrungBinh || 0));
+    return candidates
+      .map((restaurant) => ({
+        ...restaurant,
+        distance: this.distanceKm(
+          lat,
+          lon,
+          this.parseCoordinate(restaurant.lat),
+          this.parseCoordinate(restaurant.lon),
+        ),
+      }))
+      .filter((restaurant) => restaurant.distance <= radiusKm)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, Math.min(limit, MAX_LIMIT));
+  }
 
-      // 3. Lấy Top 5
-      topRestaurants = topRestaurants.slice(0, 5);
-      const count = topRestaurants.length;
+  // ------------------------------------------------------------- AI paths
+  async searchByImage(
+    file: Express.Multer.File,
+    userLat?: number,
+    userLon?: number,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No image uploaded');
+    }
 
-      // 4. [MỚI] Chọn câu trả lời ngẫu nhiên
-      let replyText = "";
-      if (count > 0) {
-        replyText = this.getRandomReply('success', { count, keyword: message });
-      } else {
-        replyText = this.getRandomReply('notFound', { keyword: message });
-      }
+    const prediction = await this.aiService.predictFood(
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+    );
 
+    if (!prediction?.food_name) {
       return {
-        reply: replyText,
-        results: topRestaurants
-      };
-
-    } catch (error) {
-      console.error("Chatbot Error:", error);
-      return {
-        reply: this.getRandomReply('error'),
-        results: []
+        data: [],
+        detectedFood: null,
+        total: 0,
+        message: 'Không nhận diện được món ăn',
       };
     }
+
+    const page = await this.findAll({
+      page: 1,
+      limit: 20,
+      sortBy: 'diemTrungBinh',
+      order: 'desc',
+      rating: 'all',
+      openNow: false,
+      search: prediction.food_name,
+      userLat,
+      userLon,
+    } as QueryRestaurantsDto);
+
+    const top = (page.data ?? [])
+      .slice()
+      .sort(
+        (a: any, b: any) => (b.diemTrungBinh ?? 0) - (a.diemTrungBinh ?? 0),
+      )
+      .slice(0, 5);
+
+    return {
+      data: top,
+      detectedFood: prediction.food_name,
+      confidence: prediction.confidence,
+      detections: prediction.detections ?? [],
+      total: top.length,
+    };
+  }
+
+  /**
+   * Conversational search.
+   *
+   * Delegates the whole turn to the AI service, which owns the conversation
+   * state and the wording, then hydrates the returned ids into full restaurant
+   * documents so the UI has images and addresses to render. The old version
+   * built its reply from a hardcoded list of Vietnamese sentences here in the
+   * backend, duplicating logic the AI service also had.
+   */
+  async chat(
+    message: string,
+    history: Array<{ role: 'user' | 'bot'; text: string }> = [],
+    userLat?: number,
+    userLon?: number,
+    lang = 'vi',
+  ) {
+    const response = await this.aiService.chat({
+      message,
+      history,
+      user_gps:
+        userLat !== undefined && userLon !== undefined
+          ? [userLat, userLon]
+          : null,
+      lang,
+      limit: 5,
+    });
+
+    if (!response) {
+      return {
+        reply:
+          lang === 'en'
+            ? 'The assistant is waking up, please try again in a moment.'
+            : 'Trợ lý đang khởi động lại, bạn thử lại sau một chút nhé! 🤒',
+        results: [],
+        kind: 'error',
+      };
+    }
+
+    const ids = (response.results ?? [])
+      .map((item) => item.id)
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    let results: any[] = [];
+    if (ids.length > 0) {
+      const documents = await this.restaurantModel
+        .find({ _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } })
+        .lean()
+        .exec();
+      // Preserve the AI's ordering, which $in does not.
+      const byId = new Map(documents.map((doc) => [String(doc._id), doc]));
+      results = ids
+        .map((id) => byId.get(id))
+        .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
+    }
+
+    return {
+      reply: response.reply,
+      results,
+      kind: response.kind,
+      intent: response.intent,
+      totalMatches: response.total_matches,
+      relaxedFilters: response.relaxed_filters ?? [],
+    };
+  }
+
+  // ------------------------------------------------------------- helpers
+  private emptyPage(page: number, sortField: string, order?: string) {
+    return {
+      data: [],
+      total: 0,
+      currentPage: page,
+      totalPages: 0,
+      sortBy: sortField,
+      order: order ?? 'desc',
+    };
+  }
+
+  /** Escape user input before it is used inside a $regex. */
+  private escapeRegex(input: string): string {
+    return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private parseCoordinate(value: unknown): number {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    if (typeof value === 'string') {
+      const parsed = Number.parseFloat(value.replace(',', '.'));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+  }
+
+  private distanceKm(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ): number {
+    // Missing coordinates are stored as 0/0, which is in the Atlantic. Return a
+    // sentinel so such rows sort last instead of appearing to be nearby.
+    if (!lat2 || !lon2 || !lat1 || !lon1) return 99_999;
+
+    const toRad = (degrees: number) => degrees * (Math.PI / 180);
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  /**
+   * Whether a restaurant is open, from a free-text hours field such as
+   * "07:00 - 22:00 | 17:00 - 02:00".
+   *
+   * An unparseable or empty value counts as open. Returning false — as the old
+   * implementation did — silently hid every restaurant whose hours had not been
+   * crawled, which is a large share of the data.
+   */
+  private isOpenNow(hours?: string): boolean {
+    if (!hours?.trim()) return true;
+
+    const now = new Date();
+    const minutesNow = now.getHours() * 60 + now.getMinutes();
+    let sawValidWindow = false;
+
+    for (const window of hours.split(/[|,]/)) {
+      const parts = window.split('-').map((part) => part.trim());
+      if (parts.length !== 2) continue;
+
+      const toMinutes = (time: string): number | null => {
+        const [h, m] = time.split(':').map(Number);
+        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+        return h * 60 + m;
+      };
+      const start = toMinutes(parts[0]);
+      const end = toMinutes(parts[1]);
+      if (start === null || end === null) continue;
+
+      sawValidWindow = true;
+      if (start <= end) {
+        if (minutesNow >= start && minutesNow <= end) return true;
+      } else if (minutesNow >= start || minutesNow <= end) {
+        // Window crosses midnight.
+        return true;
+      }
+    }
+
+    return sawValidWindow ? false : true;
   }
 }
+
+/**
+ * Ceiling on documents pulled into memory for distance/open-now processing.
+ * Large enough to cover the dataset, small enough to bound memory use.
+ */
+const MAX_IN_MEMORY = 3000;

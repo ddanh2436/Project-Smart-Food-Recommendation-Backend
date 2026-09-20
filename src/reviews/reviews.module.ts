@@ -1,17 +1,17 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AiModule } from 'src/common/ai/ai.module';
 import { ReviewsService } from './reviews.service';
 import { ReviewsController } from './reviews.controller';
 import { Review, ReviewSchema } from './schemas/review.schema';
-import { HttpModule } from '@nestjs/axios';
 
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: Review.name, schema: ReviewSchema }]),
-    HttpModule,
+    AiModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],
-  exports: [ReviewsService], 
+  exports: [ReviewsService],
 })
 export class ReviewsModule {}

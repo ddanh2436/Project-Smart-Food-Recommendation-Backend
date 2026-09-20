@@ -1,134 +1,209 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { AuthService } from './auth.service';
-import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, UnauthorizedException, ForbiddenException } from '@nestjs/common';
-
-// [QUAN TRỌNG] Mock bcrypt trực tiếp để tránh lỗi runtime khi test
-jest.mock('bcrypt', () => ({
-  compare: jest.fn(),
-  hash: jest.fn(),
-  genSalt: jest.fn(),
-}));
+import {
+  ForbiddenException,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { AuthService } from './auth.service';
+import { UsersService } from 'src/users/users.service';
 
+/**
+ * These tests pin down the auth bugs that were fixed, so a future refactor
+ * cannot quietly reintroduce them.
+ */
 describe('AuthService', () => {
   let service: AuthService;
-  let usersService: UsersService;
-  let jwtService: JwtService;
+  let usersService: jest.Mocked<Partial<UsersService>>;
+  let jwtService: jest.Mocked<Partial<JwtService>>;
 
-  const mockUser = {
-    _id: '64c9e782650742a7b8e5d2b1',
-    email: 'test@example.com',
-    password: 'hashedPassword',
-    hashedRefreshToken: 'hashedToken',
+  const secrets: Record<string, string> = {
+    JWT_SECRET: 'access-secret',
+    JWT_REFRESH_SECRET: 'refresh-secret',
+    JWT_EXPIRES_IN: '15m',
+    JWT_REFRESH_EXPIRES_IN: '7d',
   };
 
-  const mockUsersService = {
-    findOneByEmail: jest.fn(),
-    create: jest.fn(),
-    updateRefreshToken: jest.fn(),
-    findOne: jest.fn(),
-  };
-
-  const mockJwtService = {
-    signAsync: jest.fn(),
-  };
-
-  const mockConfigService = {
-    get: jest.fn((key: string) => {
-      if (key === 'JWT_SECRET') return 'secret';
-      if (key === 'JWT_REFRESH_SECRET') return 'refresh-secret';
-      return null;
-    }),
-  };
+  const makeUser = (overrides: Record<string, unknown> = {}) =>
+    ({
+      _id: { toString: () => 'user-1' },
+      email: 'a@b.com',
+      username: 'ab',
+      password: '',
+      provider: null,
+      ...overrides,
+    }) as never;
 
   beforeEach(async () => {
+    usersService = {
+      findByEmailOrNull: jest.fn(),
+      findByUsernameOrNull: jest.fn(),
+      findByEmailWithPassword: jest.fn(),
+      findByIdWithRefreshToken: jest.fn(),
+      setRefreshTokenHash: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn(),
+      findOne: jest.fn(),
+      updateProfileFields: jest.fn(),
+      buildUniqueUsername: jest.fn().mockResolvedValue('ab'),
+    };
+    jwtService = {
+      signAsync: jest.fn().mockResolvedValue('signed.jwt.token'),
+      verifyAsync: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: UsersService, useValue: mockUsersService },
-        { provide: JwtService, useValue: mockJwtService },
-        { provide: ConfigService, useValue: mockConfigService },
+        { provide: UsersService, useValue: usersService },
+        { provide: JwtService, useValue: jwtService },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => secrets[key] },
+        },
       ],
     }).compile();
 
-    service = module.get<AuthService>(AuthService);
-    usersService = module.get<UsersService>(UsersService);
-    jwtService = module.get<JwtService>(JwtService);
+    service = module.get(AuthService);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
+  describe('refresh token storage', () => {
+    it('stores a bcrypt HASH of the refresh token, never the token itself', async () => {
+      // Drive token issuance through register, which needs no existing user.
+      (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(null);
+      (usersService.findByUsernameOrNull as jest.Mock).mockResolvedValue(null);
+      (usersService.create as jest.Mock).mockResolvedValue(makeUser());
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
+      await service.register({
+        email: 'a@b.com',
+        username: 'ab',
+        password: 'secret123',
+      } as never);
 
-  // --- TEST REGISTER ---
-  describe('register', () => {
-    const registerDto = {
-      email: 'new@example.com',
-      password: 'password',
-      username: 'newuser',
-      firstName: 'New',
-      lastName: 'User',
-    };
+      const [, storedValue] = (usersService.setRefreshTokenHash as jest.Mock)
+        .mock.calls.at(-1)!;
 
-    it('should register a new user successfully', async () => {
-      mockUsersService.findOneByEmail.mockRejectedValue(new Error('Not found'));
-      mockUsersService.create.mockResolvedValue(mockUser);
-      mockJwtService.signAsync.mockResolvedValue('token_string');
-      
-      const result = await service.register(registerDto);
-
-      expect(mockUsersService.create).toHaveBeenCalled();
-      expect(result).toHaveProperty('accessToken');
+      // The regression this guards: the raw token used to be written straight
+      // to the database, which also made bcrypt.compare always fail.
+      expect(storedValue).not.toBe('signed.jwt.token');
+      expect(storedValue).toMatch(/^\$2[aby]\$/);
+      await expect(
+        bcrypt.compare('signed.jwt.token', storedValue as string),
+      ).resolves.toBe(true);
     });
 
-    it('should throw BadRequestException if email already exists', async () => {
-      mockUsersService.findOneByEmail.mockResolvedValue(mockUser);
-      await expect(service.register(registerDto)).rejects.toThrow(BadRequestException);
+    it('accepts a refresh token that matches the stored hash', async () => {
+      const hash = await bcrypt.hash('signed.jwt.token', 10);
+      (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
+        sub: 'user-1',
+        email: 'a@b.com',
+      });
+      (usersService.findByIdWithRefreshToken as jest.Mock).mockResolvedValue(
+        makeUser({ hashedRefreshToken: hash }),
+      );
+
+      await expect(service.refresh('signed.jwt.token')).resolves.toEqual({
+        accessToken: 'signed.jwt.token',
+        refreshToken: 'signed.jwt.token',
+      });
+    });
+
+    it('revokes the session when a token does not match the stored hash', async () => {
+      (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
+        sub: 'user-1',
+        email: 'a@b.com',
+      });
+      (usersService.findByIdWithRefreshToken as jest.Mock).mockResolvedValue(
+        makeUser({ hashedRefreshToken: await bcrypt.hash('other-token', 10) }),
+      );
+
+      await expect(service.refresh('signed.jwt.token')).rejects.toThrow(
+        ForbiddenException,
+      );
+      // A replayed token means possible theft, so the session is cleared.
+      expect(usersService.setRefreshTokenHash).toHaveBeenCalledWith(
+        'user-1',
+        null,
+      );
+    });
+
+    it('rejects a refresh token that fails JWT verification without a DB read', async () => {
+      (jwtService.verifyAsync as jest.Mock).mockRejectedValue(new Error('bad'));
+
+      await expect(service.refresh('forged.token')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(usersService.findByIdWithRefreshToken).not.toHaveBeenCalled();
     });
   });
 
-  // --- TEST LOGIN ---
   describe('login', () => {
-    const loginDto = { email: 'test@example.com', password: 'password123' };
+    it('returns the same error for an unknown email as for a wrong password', async () => {
+      (usersService.findByEmailWithPassword as jest.Mock).mockResolvedValue(
+        null,
+      );
+      const unknownEmail = service.login({
+        email: 'nobody@b.com',
+        password: 'secret123',
+      } as never);
+      await expect(unknownEmail).rejects.toThrow(UnauthorizedException);
+      await expect(unknownEmail).rejects.toThrow('Invalid credentials');
 
-    it('should return tokens if credentials are valid', async () => {
-      mockUsersService.findOneByEmail.mockResolvedValue(mockUser);
-      (bcrypt.compare as jest.Mock).mockResolvedValue(true); // Mock pass đúng
-      mockJwtService.signAsync.mockResolvedValue('token_string');
-
-      const result = await service.login(loginDto);
-      expect(result).toHaveProperty('accessToken');
+      (usersService.findByEmailWithPassword as jest.Mock).mockResolvedValue(
+        makeUser({ password: await bcrypt.hash('correct-password', 10) }),
+      );
+      const wrongPassword = service.login({
+        email: 'a@b.com',
+        password: 'wrong-password',
+      } as never);
+      // Identical message: otherwise the response reveals which emails exist.
+      await expect(wrongPassword).rejects.toThrow('Invalid credentials');
     });
 
-    it('should throw UnauthorizedException if password is incorrect', async () => {
-      mockUsersService.findOneByEmail.mockResolvedValue(mockUser);
-      (bcrypt.compare as jest.Mock).mockResolvedValue(false); // Mock pass sai
+    it('tells a Google user to use Google instead of failing on the password', async () => {
+      (usersService.findByEmailWithPassword as jest.Mock).mockResolvedValue(
+        makeUser({ provider: 'google', password: 'random-hex' }),
+      );
 
-      await expect(service.login(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(
+        service.login({ email: 'a@b.com', password: 'guess' } as never),
+      ).rejects.toThrow(/Google/);
     });
   });
 
-  // --- TEST REFRESH ---
-  describe('refresh', () => {
-    it('should return new tokens if refresh token is valid', async () => {
-      mockUsersService.findOne.mockResolvedValue(mockUser);
-      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-      mockJwtService.signAsync.mockResolvedValue('new_token');
-
-      const result = await service.refresh('uid', 'rt');
-      expect(result).toHaveProperty('accessToken');
+  describe('register', () => {
+    it('rejects a duplicate email', async () => {
+      (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(
+        makeUser(),
+      );
+      await expect(
+        service.register({
+          email: 'a@b.com',
+          username: 'ab',
+          password: 'secret123',
+        } as never),
+      ).rejects.toThrow(BadRequestException);
     });
+  });
 
-    it('should throw ForbiddenException if user not found', async () => {
-      mockUsersService.findOne.mockResolvedValue(null);
-      await expect(service.refresh('uid', 'rt')).rejects.toThrow(ForbiddenException);
+  describe('signInWithGoogle', () => {
+    it('gives a new Google account a 64-char random password, not Math.random()', async () => {
+      (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(null);
+      (usersService.create as jest.Mock).mockResolvedValue(
+        makeUser({ provider: 'google' }),
+      );
+
+      await service.signInWithGoogle({
+        email: 'g@b.com',
+        firstName: 'G',
+        lastName: 'B',
+      });
+
+      const [payload] = (usersService.create as jest.Mock).mock.calls[0];
+      // 32 random bytes as hex. The old code used ~6 chars from Math.random().
+      expect(payload.password).toHaveLength(64);
+      expect(payload.provider).toBe('google');
     });
   });
 });
