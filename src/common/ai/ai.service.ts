@@ -16,6 +16,10 @@ export interface AiRecommendation {
   district?: string;
   city?: string;
   rating?: number;
+  /** Why this row is in the answer, and what to know before going. Facts, not
+   *  sentences: the client words them in whichever language it is showing. */
+  reasons?: Array<Record<string, unknown>>;
+  cautions?: Array<Record<string, unknown>>;
 }
 
 export interface AiRecommendResponse {
@@ -32,6 +36,12 @@ export interface AiSentiment {
   available?: boolean;
 }
 
+/** A quick reply under a chat answer: `label` is shown, `query` is sent. */
+export interface AiChatChip {
+  label: string;
+  query: string;
+}
+
 export interface AiChatResponse {
   reply: string;
   results: AiRecommendation[];
@@ -39,12 +49,22 @@ export interface AiChatResponse {
   intent?: Record<string, unknown>;
   total_matches?: number;
   relaxed_filters?: string[];
+  /** Which of dish / area / price the query left unset. */
+  slots_missing?: string[];
+  chips?: AiChatChip[];
 }
 
 export interface AiFoodPrediction {
+  /** Null unless a dish is actually being asserted (tiers confident/uncertain). */
   food_name: string | null;
   original_name?: string;
   confidence?: number;
+  /** How much to trust the guess. The client words the reply from this. */
+  tier?: 'confident' | 'uncertain' | 'group' | 'none';
+  /** The kind of food it looks like, when the dish itself is not certain. */
+  group?: 'soup' | 'dry' | null;
+  /** Dishes worth offering next, as Vietnamese search terms. */
+  suggestions?: string[];
   detections?: Array<{
     food_name: string;
     original_name: string;

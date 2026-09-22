@@ -9,6 +9,7 @@ import mongoose, { Model } from 'mongoose';
 import { AiService } from 'src/common/ai/ai.service';
 import { QueryRestaurantsDto, SortField } from './dto/query-restaurants.dto';
 import { Restaurant, RestaurantDocument } from './schemas/restaurant.schema';
+import { SCORE_FIELDS } from './rating-stats.service';
 
 /** Score fields a client is allowed to sort by. */
 const SORTABLE_SCORES: Record<SortField, string> = {
@@ -412,12 +413,18 @@ export class RestaurantsService {
       file.mimetype,
     );
 
+    // No dish named means no search: a confident list of the wrong
+    // restaurants is worse than saying the photo was not clear enough. The
+    // tier and the suggestions are what let the client offer a way forward
+    // instead of the dead end this used to be.
     if (!prediction?.food_name) {
       return {
         data: [],
         detectedFood: null,
         total: 0,
-        message: 'Không nhận diện được món ăn',
+        tier: prediction?.tier ?? 'none',
+        group: prediction?.group ?? null,
+        suggestions: prediction?.suggestions ?? [],
       };
     }
 
@@ -445,6 +452,9 @@ export class RestaurantsService {
       detectedFood: prediction.food_name,
       confidence: prediction.confidence,
       detections: prediction.detections ?? [],
+      tier: prediction.tier ?? 'confident',
+      group: prediction.group ?? null,
+      suggestions: prediction.suggestions ?? [],
       total: top.length,
     };
   }
@@ -484,6 +494,8 @@ export class RestaurantsService {
             : 'Trợ lý đang khởi động lại, bạn thử lại sau một chút nhé! 🤒',
         results: [],
         kind: 'error',
+        slotsMissing: [],
+        chips: [],
       };
     }
 
@@ -497,10 +509,21 @@ export class RestaurantsService {
         .find({ _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } })
         .lean()
         .exec();
-      // Preserve the AI's ordering, which $in does not.
+      // Preserve the AI's ordering, which $in does not, and carry its reasons
+      // across: hydrating from Mongo by id would otherwise drop them, and the
+      // explanation is the half of the answer the database does not hold.
       const byId = new Map(documents.map((doc) => [String(doc._id), doc]));
+      const explained = new Map(
+        (response.results ?? []).map((item) => [
+          item.id,
+          { reasons: item.reasons ?? [], cautions: item.cautions ?? [] },
+        ]),
+      );
       results = ids
-        .map((id) => byId.get(id))
+        .map((id) => {
+          const document = byId.get(id);
+          return document ? { ...document, ...explained.get(id) } : undefined;
+        })
         .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
     }
 
@@ -511,7 +534,248 @@ export class RestaurantsService {
       intent: response.intent,
       totalMatches: response.total_matches,
       relaxedFilters: response.relaxed_filters ?? [],
+      slotsMissing: response.slots_missing ?? [],
+      chips: response.chips ?? [],
     };
+  }
+
+  /**
+   * Which meal it is in Vietnam right now, and the tag that marks it.
+   *
+   * The tags come from the crawler's own vocabulary, where they are the four
+   * commonest attributes in the whole collection: "Ăn tối" is on 4901 places,
+   * "Ăn trưa" 4428, "Ăn sáng" 3824, "Ăn đêm" 2906. So this is a filter with
+   * real coverage rather than a label that matches a handful of rows.
+   */
+  private currentMeal(): { meal: string; tag: string } {
+    const hour = Math.floor(this.vietnamMinutesNow() / 60);
+    if (hour >= 5 && hour < 10) return { meal: 'breakfast', tag: 'Ăn sáng' };
+    if (hour >= 10 && hour < 14) return { meal: 'lunch', tag: 'Ăn trưa' };
+    if (hour >= 14 && hour < 21) return { meal: 'dinner', tag: 'Ăn tối' };
+    return { meal: 'latenight', tag: 'Ăn đêm' };
+  }
+
+  /**
+   * Places worth eating at right now: open, suited to this meal, nearby.
+   *
+   * Deliberately a block of its own rather than a hidden tilt in the main
+   * ranking. Reordering every search by the time of day would mean the same
+   * query returned different results at 08:00 and 22:00 with nothing on screen
+   * to explain why, which reads as a broken site. As a labelled section the
+   * rule is visible, and the rest of the site stays predictable.
+   */
+  async suggestionsForNow(userLat?: number, userLon?: number, limit = 8) {
+    const { meal, tag } = this.currentMeal();
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+
+    const candidates = await this.restaurantModel
+      .find({ tags: { $regex: tag }, diemTrungBinh: { $gt: 0 } })
+      .sort({ diemTrungBinhAdj: -1 })
+      .limit(MAX_IN_MEMORY)
+      .lean()
+      .exec();
+
+    let open = candidates.filter((row) => this.isOpenNow(row.gioMoCua));
+
+    if (hasCoordinates) {
+      open = open
+        .map((row) => ({
+          ...row,
+          distance: this.distanceKm(
+            userLat as number,
+            userLon as number,
+            row.lat as number,
+            row.lon as number,
+          ),
+        }))
+        .filter((row) => row.distance <= NEARBY_RADIUS_KM)
+        // Close and good, rather than close at any quality: the distance is
+        // already capped, so within the cap the score is what decides.
+        .sort(
+          (a: any, b: any) =>
+            (b.diemTrungBinhAdj ?? b.diemTrungBinh ?? 0) -
+            (a.diemTrungBinhAdj ?? a.diemTrungBinh ?? 0),
+        );
+    }
+
+    return { meal, mealTag: tag, data: open.slice(0, limit), total: open.length };
+  }
+
+  /**
+   * One good place to eat right now, picked at random from those that qualify.
+   *
+   * Random among the qualifying, not random among all: a shuffle that can
+   * return a closed 4.0 an hour away is a novelty, while one that can only
+   * return somewhere open, nearby and well reviewed is a decision made for
+   * you. The reasons come back as data so the client can word them.
+   */
+  async surprise(userLat?: number, userLon?: number) {
+    const { meal, tag } = this.currentMeal();
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+
+    const candidates = await this.restaurantModel
+      .find({
+        diemTrungBinhAdj: { $gte: SURPRISE_MIN_SCORE },
+        reviewCount: { $gte: SURPRISE_MIN_REVIEWS },
+      })
+      .limit(MAX_IN_MEMORY)
+      .lean()
+      .exec();
+
+    let pool: any[] = candidates.filter((row) => this.isOpenNow(row.gioMoCua));
+
+    if (hasCoordinates) {
+      pool = pool
+        .map((row) => ({
+          ...row,
+          distance: this.distanceKm(
+            userLat as number,
+            userLon as number,
+            row.lat as number,
+            row.lon as number,
+          ),
+        }))
+        .filter((row) => row.distance <= SURPRISE_RADIUS_KM);
+    }
+
+    // Prefer somewhere that suits the current meal, but do not insist: at
+    // 15:00 the pool would otherwise be thin enough to repeat itself.
+    const forThisMeal = pool.filter((row) =>
+      String(row.tags ?? '').includes(tag),
+    );
+    const finalPool = forThisMeal.length >= 5 ? forThisMeal : pool;
+
+    if (finalPool.length === 0) {
+      return { data: null, meal, mealTag: tag, poolSize: 0, matchedMeal: false };
+    }
+
+    const pick = finalPool[Math.floor(Math.random() * finalPool.length)];
+    return {
+      data: pick,
+      meal,
+      mealTag: tag,
+      matchedMeal: forThisMeal.length >= 5,
+      poolSize: finalPool.length,
+      // What made it qualify, so the client can say why rather than just
+      // producing a restaurant out of nowhere.
+      reasons: {
+        openNow: true,
+        score: pick.diemTrungBinhAdj ?? pick.diemTrungBinh ?? null,
+        rawScore: pick.diemTrungBinh ?? null,
+        reviewCount: pick.reviewCount ?? 0,
+        distanceKm:
+          typeof pick.distance === 'number' && pick.distance < 99_999
+            ? Math.round(pick.distance * 10) / 10
+            : null,
+      },
+    };
+  }
+
+  /**
+   * Two or three restaurants side by side, with the winner named per row.
+   *
+   * The comparison is computed here rather than in the page, because deciding
+   * who wins a criterion is a judgement the API should make once: a difference
+   * of 0.1 on a 0-10 score is not a win, it is two places that are the same,
+   * and a page that renders a green tick for it is lying quietly. Anything
+   * inside COMPARE_TIE_MARGIN comes back as a draw.
+   *
+   * Aspects are included when the aspect index has reached both places; a row
+   * where only one side has evidence is dropped rather than awarded, since
+   * "nobody mentioned it" is not a loss.
+   */
+  async compare(ids: string[], userLat?: number, userLon?: number) {
+    const valid = ids
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .slice(0, COMPARE_MAX);
+    if (valid.length < 2) {
+      throw new BadRequestException('Give at least two valid restaurant ids');
+    }
+
+    const documents = await this.restaurantModel
+      .find({ _id: { $in: valid.map((id) => new mongoose.Types.ObjectId(id)) } })
+      .lean()
+      .exec();
+
+    // Preserve the order asked for; $in does not.
+    const byId = new Map(documents.map((doc) => [String(doc._id), doc]));
+    const places: any[] = valid
+      .map((id) => byId.get(id))
+      .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
+
+    if (places.length < 2) {
+      throw new BadRequestException('Could not find two of those restaurants');
+    }
+
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+    if (hasCoordinates) {
+      for (const place of places) {
+        const km = this.distanceKm(
+          userLat as number,
+          userLon as number,
+          place.lat as number,
+          place.lon as number,
+        );
+        place.distance = km < 99_999 ? Math.round(km * 10) / 10 : null;
+      }
+    }
+
+    const rows: Array<{
+      key: string;
+      kind: 'score' | 'aspect' | 'distance';
+      values: Array<number | null>;
+      winner: number | null;
+    }> = [];
+
+    const decide = (values: Array<number | null>, lowerIsBetter = false) => {
+      const known = values.filter((v): v is number => typeof v === 'number');
+      if (known.length < 2) return null;
+      const best = lowerIsBetter ? Math.min(...known) : Math.max(...known);
+      const runnerUp = lowerIsBetter
+        ? Math.min(...known.filter((v) => v !== best))
+        : Math.max(...known.filter((v) => v !== best));
+      if (!Number.isFinite(runnerUp)) return null;
+      if (Math.abs(best - runnerUp) < COMPARE_TIE_MARGIN) return null;
+      return values.findIndex((v) => v === best);
+    };
+
+    for (const { raw } of SCORE_FIELDS) {
+      const values = places.map((p) =>
+        typeof p[raw] === 'number' && p[raw] > 0 ? (p[raw] as number) : null,
+      );
+      rows.push({ key: raw, kind: 'score', values, winner: decide(values) });
+    }
+
+    for (const key of COMPARE_ASPECTS) {
+      const values = places.map((p) => {
+        const entry = p.aspects?.[key];
+        // Both sides need evidence, or the row says nothing worth showing.
+        if (!entry || (entry.mentions ?? 0) < 3) return null;
+        return Math.round((entry.positive_ratio ?? 0) * 100);
+      });
+      if (values.some((v) => v === null)) continue;
+      rows.push({ key, kind: 'aspect', values, winner: decide(values) });
+    }
+
+    if (hasCoordinates) {
+      const values = places.map((p) =>
+        typeof p.distance === 'number' ? p.distance : null,
+      );
+      rows.push({
+        key: 'distance',
+        kind: 'distance',
+        values,
+        winner: decide(values, true),
+      });
+    }
+
+    // A tally, so the page can lead with an answer instead of a table the
+    // reader has to add up themselves.
+    const wins = places.map(
+      (_, index) => rows.filter((row) => row.winner === index).length,
+    );
+
+    return { places, rows, wins, tieMargin: COMPARE_TIE_MARGIN };
   }
 
   // ------------------------------------------------------------- helpers
@@ -567,11 +831,27 @@ export class RestaurantsService {
    * implementation did — silently hid every restaurant whose hours had not been
    * crawled, which is a large share of the data.
    */
+  /**
+   * Minutes past midnight in Vietnam.
+   *
+   * `new Date().getHours()` reads the *server's* clock, and Render runs in UTC
+   * — so "open now" was answered seven hours in the past. At 19:00 in Ho Chi
+   * Minh City the filter believed it was midday, and dinner-only places were
+   * reported closed while breakfast places were reported open.
+   *
+   * Vietnam is UTC+7 and has observed no daylight saving since 1975, so the
+   * offset is a constant rather than something worth a timezone library.
+   */
+  private vietnamMinutesNow(): number {
+    const now = new Date();
+    const minutes = now.getUTCHours() * 60 + now.getUTCMinutes() + 7 * 60;
+    return ((minutes % 1440) + 1440) % 1440;
+  }
+
   private isOpenNow(hours?: string): boolean {
     if (!hours?.trim()) return true;
 
-    const now = new Date();
-    const minutesNow = now.getHours() * 60 + now.getMinutes();
+    const minutesNow = this.vietnamMinutesNow();
     let sawValidWindow = false;
 
     for (const window of hours.split(/[|,]/)) {
@@ -617,3 +897,29 @@ export class RestaurantsService {
  * number again.
  */
 const MAX_IN_MEMORY = 8000;
+
+/** Radius for the "right now, near you" block. */
+const NEARBY_RADIUS_KM = 10;
+
+/**
+ * What a lucky pick has to clear.
+ *
+ * The score is the review-count-adjusted one, and a minimum review count sits
+ * beside it, because a 10.0 from a single review shrinks to 7.77 and would
+ * otherwise slip in below the bar's intent rather than above it.
+ */
+const SURPRISE_MIN_SCORE = 7.5;
+const SURPRISE_MIN_REVIEWS = 5;
+const SURPRISE_RADIUS_KM = 5;
+
+/** How many places a comparison will take, and what counts as a draw. */
+const COMPARE_MAX = 3;
+const COMPARE_TIE_MARGIN = 0.2;
+const COMPARE_ASPECTS = [
+  'food',
+  'price',
+  'service',
+  'space',
+  'hygiene',
+  'parking',
+] as const;
