@@ -484,6 +484,8 @@ export class RestaurantsService {
             : 'Trợ lý đang khởi động lại, bạn thử lại sau một chút nhé! 🤒',
         results: [],
         kind: 'error',
+        slotsMissing: [],
+        chips: [],
       };
     }
 
@@ -511,6 +513,8 @@ export class RestaurantsService {
       intent: response.intent,
       totalMatches: response.total_matches,
       relaxedFilters: response.relaxed_filters ?? [],
+      slotsMissing: response.slots_missing ?? [],
+      chips: response.chips ?? [],
     };
   }
 

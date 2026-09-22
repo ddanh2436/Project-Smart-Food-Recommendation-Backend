@@ -32,6 +32,12 @@ export interface AiSentiment {
   available?: boolean;
 }
 
+/** A quick reply under a chat answer: `label` is shown, `query` is sent. */
+export interface AiChatChip {
+  label: string;
+  query: string;
+}
+
 export interface AiChatResponse {
   reply: string;
   results: AiRecommendation[];
@@ -39,6 +45,9 @@ export interface AiChatResponse {
   intent?: Record<string, unknown>;
   total_matches?: number;
   relaxed_filters?: string[];
+  /** Which of dish / area / price the query left unset. */
+  slots_missing?: string[];
+  chips?: AiChatChip[];
 }
 
 export interface AiFoodPrediction {
