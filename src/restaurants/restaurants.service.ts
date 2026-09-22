@@ -509,10 +509,21 @@ export class RestaurantsService {
         .find({ _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } })
         .lean()
         .exec();
-      // Preserve the AI's ordering, which $in does not.
+      // Preserve the AI's ordering, which $in does not, and carry its reasons
+      // across: hydrating from Mongo by id would otherwise drop them, and the
+      // explanation is the half of the answer the database does not hold.
       const byId = new Map(documents.map((doc) => [String(doc._id), doc]));
+      const explained = new Map(
+        (response.results ?? []).map((item) => [
+          item.id,
+          { reasons: item.reasons ?? [], cautions: item.cautions ?? [] },
+        ]),
+      );
       results = ids
-        .map((id) => byId.get(id))
+        .map((id) => {
+          const document = byId.get(id);
+          return document ? { ...document, ...explained.get(id) } : undefined;
+        })
         .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
     }
 

@@ -16,6 +16,10 @@ export interface AiRecommendation {
   district?: string;
   city?: string;
   rating?: number;
+  /** Why this row is in the answer, and what to know before going. Facts, not
+   *  sentences: the client words them in whichever language it is showing. */
+  reasons?: Array<Record<string, unknown>>;
+  cautions?: Array<Record<string, unknown>>;
 }
 
 export interface AiRecommendResponse {
