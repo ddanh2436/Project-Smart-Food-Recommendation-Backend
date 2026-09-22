@@ -412,12 +412,18 @@ export class RestaurantsService {
       file.mimetype,
     );
 
+    // No dish named means no search: a confident list of the wrong
+    // restaurants is worse than saying the photo was not clear enough. The
+    // tier and the suggestions are what let the client offer a way forward
+    // instead of the dead end this used to be.
     if (!prediction?.food_name) {
       return {
         data: [],
         detectedFood: null,
         total: 0,
-        message: 'Không nhận diện được món ăn',
+        tier: prediction?.tier ?? 'none',
+        group: prediction?.group ?? null,
+        suggestions: prediction?.suggestions ?? [],
       };
     }
 
@@ -445,6 +451,9 @@ export class RestaurantsService {
       detectedFood: prediction.food_name,
       confidence: prediction.confidence,
       detections: prediction.detections ?? [],
+      tier: prediction.tier ?? 'confident',
+      group: prediction.group ?? null,
+      suggestions: prediction.suggestions ?? [],
       total: top.length,
     };
   }

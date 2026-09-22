@@ -51,9 +51,16 @@ export interface AiChatResponse {
 }
 
 export interface AiFoodPrediction {
+  /** Null unless a dish is actually being asserted (tiers confident/uncertain). */
   food_name: string | null;
   original_name?: string;
   confidence?: number;
+  /** How much to trust the guess. The client words the reply from this. */
+  tier?: 'confident' | 'uncertain' | 'group' | 'none';
+  /** The kind of food it looks like, when the dish itself is not certain. */
+  group?: 'soup' | 'dry' | null;
+  /** Dishes worth offering next, as Vietnamese search terms. */
+  suggestions?: string[];
   detections?: Array<{
     food_name: string;
     original_name: string;
