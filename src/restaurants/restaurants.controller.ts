@@ -112,6 +112,20 @@ export class RestaurantsController {
     return this.restaurantsService.findAll(query);
   }
 
+  /** Two or three restaurants side by side. Declared before `:id`. */
+  @Get('compare')
+  compare(
+    @Query('ids') ids?: string,
+    @Query('userLat') userLat?: string,
+    @Query('userLon') userLon?: string,
+  ) {
+    return this.restaurantsService.compare(
+      (ids ?? '').split(',').map((id) => id.trim()).filter(Boolean),
+      userLat ? Number(userLat) : undefined,
+      userLon ? Number(userLon) : undefined,
+    );
+  }
+
   /** Open now, suited to this meal, near you. Declared before `:id`. */
   @Get('suggestions')
   suggestionsForNow(

@@ -9,6 +9,7 @@ import mongoose, { Model } from 'mongoose';
 import { AiService } from 'src/common/ai/ai.service';
 import { QueryRestaurantsDto, SortField } from './dto/query-restaurants.dto';
 import { Restaurant, RestaurantDocument } from './schemas/restaurant.schema';
+import { SCORE_FIELDS } from './rating-stats.service';
 
 /** Score fields a client is allowed to sort by. */
 const SORTABLE_SCORES: Record<SortField, string> = {
@@ -659,6 +660,113 @@ export class RestaurantsService {
     };
   }
 
+  /**
+   * Two or three restaurants side by side, with the winner named per row.
+   *
+   * The comparison is computed here rather than in the page, because deciding
+   * who wins a criterion is a judgement the API should make once: a difference
+   * of 0.1 on a 0-10 score is not a win, it is two places that are the same,
+   * and a page that renders a green tick for it is lying quietly. Anything
+   * inside COMPARE_TIE_MARGIN comes back as a draw.
+   *
+   * Aspects are included when the aspect index has reached both places; a row
+   * where only one side has evidence is dropped rather than awarded, since
+   * "nobody mentioned it" is not a loss.
+   */
+  async compare(ids: string[], userLat?: number, userLon?: number) {
+    const valid = ids
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .slice(0, COMPARE_MAX);
+    if (valid.length < 2) {
+      throw new BadRequestException('Give at least two valid restaurant ids');
+    }
+
+    const documents = await this.restaurantModel
+      .find({ _id: { $in: valid.map((id) => new mongoose.Types.ObjectId(id)) } })
+      .lean()
+      .exec();
+
+    // Preserve the order asked for; $in does not.
+    const byId = new Map(documents.map((doc) => [String(doc._id), doc]));
+    const places: any[] = valid
+      .map((id) => byId.get(id))
+      .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
+
+    if (places.length < 2) {
+      throw new BadRequestException('Could not find two of those restaurants');
+    }
+
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+    if (hasCoordinates) {
+      for (const place of places) {
+        const km = this.distanceKm(
+          userLat as number,
+          userLon as number,
+          place.lat as number,
+          place.lon as number,
+        );
+        place.distance = km < 99_999 ? Math.round(km * 10) / 10 : null;
+      }
+    }
+
+    const rows: Array<{
+      key: string;
+      kind: 'score' | 'aspect' | 'distance';
+      values: Array<number | null>;
+      winner: number | null;
+    }> = [];
+
+    const decide = (values: Array<number | null>, lowerIsBetter = false) => {
+      const known = values.filter((v): v is number => typeof v === 'number');
+      if (known.length < 2) return null;
+      const best = lowerIsBetter ? Math.min(...known) : Math.max(...known);
+      const runnerUp = lowerIsBetter
+        ? Math.min(...known.filter((v) => v !== best))
+        : Math.max(...known.filter((v) => v !== best));
+      if (!Number.isFinite(runnerUp)) return null;
+      if (Math.abs(best - runnerUp) < COMPARE_TIE_MARGIN) return null;
+      return values.findIndex((v) => v === best);
+    };
+
+    for (const { raw } of SCORE_FIELDS) {
+      const values = places.map((p) =>
+        typeof p[raw] === 'number' && p[raw] > 0 ? (p[raw] as number) : null,
+      );
+      rows.push({ key: raw, kind: 'score', values, winner: decide(values) });
+    }
+
+    for (const key of COMPARE_ASPECTS) {
+      const values = places.map((p) => {
+        const entry = p.aspects?.[key];
+        // Both sides need evidence, or the row says nothing worth showing.
+        if (!entry || (entry.mentions ?? 0) < 3) return null;
+        return Math.round((entry.positive_ratio ?? 0) * 100);
+      });
+      if (values.some((v) => v === null)) continue;
+      rows.push({ key, kind: 'aspect', values, winner: decide(values) });
+    }
+
+    if (hasCoordinates) {
+      const values = places.map((p) =>
+        typeof p.distance === 'number' ? p.distance : null,
+      );
+      rows.push({
+        key: 'distance',
+        kind: 'distance',
+        values,
+        winner: decide(values, true),
+      });
+    }
+
+    // A tally, so the page can lead with an answer instead of a table the
+    // reader has to add up themselves.
+    const wins = places.map(
+      (_, index) => rows.filter((row) => row.winner === index).length,
+    );
+
+    return { places, rows, wins, tieMargin: COMPARE_TIE_MARGIN };
+  }
+
   // ------------------------------------------------------------- helpers
   private emptyPage(page: number, sortField: string, order?: string) {
     return {
@@ -792,3 +900,15 @@ const NEARBY_RADIUS_KM = 10;
 const SURPRISE_MIN_SCORE = 7.5;
 const SURPRISE_MIN_REVIEWS = 5;
 const SURPRISE_RADIUS_KM = 5;
+
+/** How many places a comparison will take, and what counts as a draw. */
+const COMPARE_MAX = 3;
+const COMPARE_TIE_MARGIN = 0.2;
+const COMPARE_ASPECTS = [
+  'food',
+  'price',
+  'service',
+  'space',
+  'hygiene',
+  'parking',
+] as const;
