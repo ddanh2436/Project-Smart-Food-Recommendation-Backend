@@ -112,6 +112,33 @@ export class RestaurantsController {
     return this.restaurantsService.findAll(query);
   }
 
+  /** Open now, suited to this meal, near you. Declared before `:id`. */
+  @Get('suggestions')
+  suggestionsForNow(
+    @Query('userLat') userLat?: string,
+    @Query('userLon') userLon?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.restaurantsService.suggestionsForNow(
+      userLat ? Number(userLat) : undefined,
+      userLon ? Number(userLon) : undefined,
+      limit ? Number(limit) : 8,
+    );
+  }
+
+  /** One good place to eat right now, chosen at random from those that fit. */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('surprise')
+  surprise(
+    @Query('userLat') userLat?: string,
+    @Query('userLon') userLon?: string,
+  ) {
+    return this.restaurantsService.surprise(
+      userLat ? Number(userLat) : undefined,
+      userLon ? Number(userLon) : undefined,
+    );
+  }
+
   /** Restaurants within a radius of a point. */
   @Get('nearby')
   findNearby(

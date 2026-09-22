@@ -527,6 +527,138 @@ export class RestaurantsService {
     };
   }
 
+  /**
+   * Which meal it is in Vietnam right now, and the tag that marks it.
+   *
+   * The tags come from the crawler's own vocabulary, where they are the four
+   * commonest attributes in the whole collection: "Ăn tối" is on 4901 places,
+   * "Ăn trưa" 4428, "Ăn sáng" 3824, "Ăn đêm" 2906. So this is a filter with
+   * real coverage rather than a label that matches a handful of rows.
+   */
+  private currentMeal(): { meal: string; tag: string } {
+    const hour = Math.floor(this.vietnamMinutesNow() / 60);
+    if (hour >= 5 && hour < 10) return { meal: 'breakfast', tag: 'Ăn sáng' };
+    if (hour >= 10 && hour < 14) return { meal: 'lunch', tag: 'Ăn trưa' };
+    if (hour >= 14 && hour < 21) return { meal: 'dinner', tag: 'Ăn tối' };
+    return { meal: 'latenight', tag: 'Ăn đêm' };
+  }
+
+  /**
+   * Places worth eating at right now: open, suited to this meal, nearby.
+   *
+   * Deliberately a block of its own rather than a hidden tilt in the main
+   * ranking. Reordering every search by the time of day would mean the same
+   * query returned different results at 08:00 and 22:00 with nothing on screen
+   * to explain why, which reads as a broken site. As a labelled section the
+   * rule is visible, and the rest of the site stays predictable.
+   */
+  async suggestionsForNow(userLat?: number, userLon?: number, limit = 8) {
+    const { meal, tag } = this.currentMeal();
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+
+    const candidates = await this.restaurantModel
+      .find({ tags: { $regex: tag }, diemTrungBinh: { $gt: 0 } })
+      .sort({ diemTrungBinhAdj: -1 })
+      .limit(MAX_IN_MEMORY)
+      .lean()
+      .exec();
+
+    let open = candidates.filter((row) => this.isOpenNow(row.gioMoCua));
+
+    if (hasCoordinates) {
+      open = open
+        .map((row) => ({
+          ...row,
+          distance: this.distanceKm(
+            userLat as number,
+            userLon as number,
+            row.lat as number,
+            row.lon as number,
+          ),
+        }))
+        .filter((row) => row.distance <= NEARBY_RADIUS_KM)
+        // Close and good, rather than close at any quality: the distance is
+        // already capped, so within the cap the score is what decides.
+        .sort(
+          (a: any, b: any) =>
+            (b.diemTrungBinhAdj ?? b.diemTrungBinh ?? 0) -
+            (a.diemTrungBinhAdj ?? a.diemTrungBinh ?? 0),
+        );
+    }
+
+    return { meal, mealTag: tag, data: open.slice(0, limit), total: open.length };
+  }
+
+  /**
+   * One good place to eat right now, picked at random from those that qualify.
+   *
+   * Random among the qualifying, not random among all: a shuffle that can
+   * return a closed 4.0 an hour away is a novelty, while one that can only
+   * return somewhere open, nearby and well reviewed is a decision made for
+   * you. The reasons come back as data so the client can word them.
+   */
+  async surprise(userLat?: number, userLon?: number) {
+    const { meal, tag } = this.currentMeal();
+    const hasCoordinates = userLat !== undefined && userLon !== undefined;
+
+    const candidates = await this.restaurantModel
+      .find({
+        diemTrungBinhAdj: { $gte: SURPRISE_MIN_SCORE },
+        reviewCount: { $gte: SURPRISE_MIN_REVIEWS },
+      })
+      .limit(MAX_IN_MEMORY)
+      .lean()
+      .exec();
+
+    let pool: any[] = candidates.filter((row) => this.isOpenNow(row.gioMoCua));
+
+    if (hasCoordinates) {
+      pool = pool
+        .map((row) => ({
+          ...row,
+          distance: this.distanceKm(
+            userLat as number,
+            userLon as number,
+            row.lat as number,
+            row.lon as number,
+          ),
+        }))
+        .filter((row) => row.distance <= SURPRISE_RADIUS_KM);
+    }
+
+    // Prefer somewhere that suits the current meal, but do not insist: at
+    // 15:00 the pool would otherwise be thin enough to repeat itself.
+    const forThisMeal = pool.filter((row) =>
+      String(row.tags ?? '').includes(tag),
+    );
+    const finalPool = forThisMeal.length >= 5 ? forThisMeal : pool;
+
+    if (finalPool.length === 0) {
+      return { data: null, meal, mealTag: tag, poolSize: 0, matchedMeal: false };
+    }
+
+    const pick = finalPool[Math.floor(Math.random() * finalPool.length)];
+    return {
+      data: pick,
+      meal,
+      mealTag: tag,
+      matchedMeal: forThisMeal.length >= 5,
+      poolSize: finalPool.length,
+      // What made it qualify, so the client can say why rather than just
+      // producing a restaurant out of nowhere.
+      reasons: {
+        openNow: true,
+        score: pick.diemTrungBinhAdj ?? pick.diemTrungBinh ?? null,
+        rawScore: pick.diemTrungBinh ?? null,
+        reviewCount: pick.reviewCount ?? 0,
+        distanceKm:
+          typeof pick.distance === 'number' && pick.distance < 99_999
+            ? Math.round(pick.distance * 10) / 10
+            : null,
+      },
+    };
+  }
+
   // ------------------------------------------------------------- helpers
   private emptyPage(page: number, sortField: string, order?: string) {
     return {
@@ -580,11 +712,27 @@ export class RestaurantsService {
    * implementation did — silently hid every restaurant whose hours had not been
    * crawled, which is a large share of the data.
    */
+  /**
+   * Minutes past midnight in Vietnam.
+   *
+   * `new Date().getHours()` reads the *server's* clock, and Render runs in UTC
+   * — so "open now" was answered seven hours in the past. At 19:00 in Ho Chi
+   * Minh City the filter believed it was midday, and dinner-only places were
+   * reported closed while breakfast places were reported open.
+   *
+   * Vietnam is UTC+7 and has observed no daylight saving since 1975, so the
+   * offset is a constant rather than something worth a timezone library.
+   */
+  private vietnamMinutesNow(): number {
+    const now = new Date();
+    const minutes = now.getUTCHours() * 60 + now.getUTCMinutes() + 7 * 60;
+    return ((minutes % 1440) + 1440) % 1440;
+  }
+
   private isOpenNow(hours?: string): boolean {
     if (!hours?.trim()) return true;
 
-    const now = new Date();
-    const minutesNow = now.getHours() * 60 + now.getMinutes();
+    const minutesNow = this.vietnamMinutesNow();
     let sawValidWindow = false;
 
     for (const window of hours.split(/[|,]/)) {
@@ -630,3 +778,17 @@ export class RestaurantsService {
  * number again.
  */
 const MAX_IN_MEMORY = 8000;
+
+/** Radius for the "right now, near you" block. */
+const NEARBY_RADIUS_KM = 10;
+
+/**
+ * What a lucky pick has to clear.
+ *
+ * The score is the review-count-adjusted one, and a minimum review count sits
+ * beside it, because a 10.0 from a single review shrinks to 7.77 and would
+ * otherwise slip in below the bar's intent rather than above it.
+ */
+const SURPRISE_MIN_SCORE = 7.5;
+const SURPRISE_MIN_REVIEWS = 5;
+const SURPRISE_RADIUS_KM = 5;
