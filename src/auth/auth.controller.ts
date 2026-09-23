@@ -15,15 +15,20 @@ import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '@nestjs/passport';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { AuthService, GoogleProfile } from './auth.service';
+import {
+  AuthService,
+  EmailRegisteredWithPasswordError,
+  GoogleProfile,
+} from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { GoogleCallbackGuard } from './google-callback.guard';
 import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
 interface RequestWithUser extends Request {
-  user: { sub: string; email: string };
+  user: { sub: string; email: string; sid?: string };
 }
 
 interface RequestWithGoogleUser extends Request {
@@ -47,12 +52,19 @@ export class AuthController {
   }
 
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleCallbackGuard)
   async googleAuthRedirect(
     @Req() req: RequestWithGoogleUser,
     @Res() res: Response,
   ): Promise<void> {
     const frontendUrl = this.resolveFrontendUrl();
+
+    // No user means Passport rejected the callback: a state that did not match
+    // the cookie, an unverified Google email, or the user cancelling.
+    if (!req.user) {
+      res.redirect(`${frontendUrl}/auth?error=google_signin_failed`);
+      return;
+    }
 
     try {
       const { accessToken, refreshToken } =
@@ -72,6 +84,10 @@ export class AuthController {
       }).toString();
       res.redirect(`${frontendUrl}/auth/callback#${fragment}`);
     } catch (error) {
+      if (error instanceof EmailRegisteredWithPasswordError) {
+        res.redirect(`${frontendUrl}/auth?error=email_uses_password`);
+        return;
+      }
       this.logger.error(
         `Google sign-in failed: ${error instanceof Error ? error.message : error}`,
       );
@@ -102,7 +118,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Req() req: RequestWithUser) {
-    return this.authService.logout(req.user.sub);
+    return this.authService.logout(req.user.sub, req.user.sid);
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })

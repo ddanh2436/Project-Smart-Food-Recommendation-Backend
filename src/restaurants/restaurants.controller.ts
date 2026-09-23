@@ -136,7 +136,9 @@ export class RestaurantsController {
     return this.restaurantsService.suggestionsForNow(
       userLat ? Number(userLat) : undefined,
       userLon ? Number(userLon) : undefined,
-      limit ? Number(limit) : 8,
+      // Capped like the other list endpoints; unbounded, it was a way to pull
+      // every open restaurant in one request.
+      Math.min(Math.max(Number(limit) || 8, 1), 24),
     );
   }
 

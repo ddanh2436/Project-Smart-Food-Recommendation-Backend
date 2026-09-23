@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
@@ -6,7 +7,9 @@ import compression from 'compression';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
   const config = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
@@ -34,6 +37,26 @@ async function bootstrap() {
     );
     process.exit(1);
   }
+
+  /**
+   * Trust the platform's proxy, so `req.ip` is the client and not the proxy.
+   *
+   * Render terminates connections at its own proxy, so without this every
+   * request arrived from the proxy's address. The rate limiter keys on
+   * `req.ip`, which made each limit one bucket shared by the whole site: the
+   * global 120 requests a minute covered every visitor at once (a home page
+   * load alone makes about ten calls), and ten failed logins by anyone locked
+   * every user out of signing in.
+   *
+   * The value is a hop count, not `true`. `true` would believe the leftmost
+   * X-Forwarded-For entry, which the client writes itself, and anyone could
+   * then pick a fresh "IP" per request and walk straight past the limits.
+   * Trusting exactly the hops the platform adds takes the address the nearest
+   * trusted proxy saw. Check the result with GET /admin/client-ip after a
+   * deploy, and raise TRUST_PROXY_HOPS if it still shows a proxy address.
+   */
+  const hops = Number(config.get<string>('TRUST_PROXY_HOPS') ?? '1');
+  app.set('trust proxy', Number.isInteger(hops) && hops >= 0 ? hops : 1);
 
   app.use(helmet());
   app.use(compression());
@@ -79,6 +102,22 @@ async function bootstrap() {
     allowedOrigins.push(frontendUrl.replace(/\/+$/, ''));
   }
 
+  // Preview URLs look like `<project>-<hash>-<team>.vercel.app`. Both ends are
+  // pinned: a project prefix alone still matches a stranger's project named
+  // `<project>-anything`, but the team slug is unique to the owner's account.
+  const slug = (key: string) => {
+    const value = (config.get<string>(key) ?? '').trim().toLowerCase();
+    return /^[a-z0-9-]+$/.test(value) ? value : '';
+  };
+  const previewProject = slug('VERCEL_PREVIEW_PROJECT');
+  const previewTeam = slug('VERCEL_TEAM_SLUG');
+  const previewPattern =
+    previewProject && previewTeam
+      ? new RegExp(
+          `^https://${previewProject}-[a-z0-9-]+-${previewTeam}[.]vercel[.]app$`,
+        )
+      : null;
+
   app.enableCors({
     origin: (origin, callback) => {
       // Requests with no Origin header (curl, server-to-server, same-origin
@@ -88,11 +127,15 @@ async function bootstrap() {
         return callback(null, true);
       }
       // Vercel preview deployments get a new hostname per commit, so match the
-      // project's preview pattern rather than listing every one.
-      if (/^https:\/\/[\w-]+\.vercel\.app$/.test(origin)) {
+      // project's preview pattern rather than listing every one. Only this
+      // project's: any `*.vercel.app` let anyone deploy a page that could make
+      // credentialed calls to the API. Unset means no previews are allowed.
+      if (previewPattern?.test(origin)) {
         return callback(null, true);
       }
-      return callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+      // No CORS headers is how a browser is told no. Passing an Error instead
+      // turned every refused preflight into a logged 500.
+      return callback(null, false);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
