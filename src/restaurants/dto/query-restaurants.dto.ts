@@ -20,6 +20,33 @@ export type SortField =
   | 'diemPhucVu'
   | 'diemGiaCa';
 
+/**
+ * Attribute tags a listing can be filtered on. A closed list rather than any
+ * string: the value goes into a regular expression, and these are the tags
+ * that exist in the data (see Frontend/app/lib/restaurant.ts for counts).
+ */
+export const FILTER_TAGS = [
+  'Máy lạnh',
+  'Sạch sẽ',
+  'Không gian đẹp',
+  'Sang trọng',
+  'Ấm cúng',
+  'Yên tĩnh',
+  'Vỉa hè',
+  'Sân vườn',
+  'Gia đình',
+  'Hẹn hò',
+  'Lãng mạn',
+  'Nhậu',
+  'Tụ tập',
+  'Bình dân',
+  'Cơm văn phòng',
+  'Ăn sáng',
+  'Ăn trưa',
+  'Ăn tối',
+  'Ăn đêm',
+] as const;
+
 const SORT_VALUES = [
   'diemTrungBinh',
   'diemKhongGian',
@@ -89,4 +116,9 @@ export class QueryRestaurantsDto {
   @IsOptional()
   @IsIn(['hanoi', 'hcmc', 'danang', ''])
   city?: string;
+
+  /** One attribute tag, from FILTER_TAGS. */
+  @IsOptional()
+  @IsIn([...FILTER_TAGS, ''])
+  tag?: string;
 }

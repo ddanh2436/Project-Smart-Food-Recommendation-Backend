@@ -137,6 +137,12 @@ export class RestaurantsService {
       filter.diaChi = { $regex: CITY_PATTERNS[query.city] };
     }
 
+    // `tags` is an array, so this is an exact element match: "Bún" does not
+    // match "Bún bò Huế".
+    if (query.tag) {
+      filter.tags = query.tag;
+    }
+
     if (query.rating && query.rating !== 'all' && RATING_RANGES[query.rating]) {
       filter[sortField] = RATING_RANGES[query.rating];
     }
