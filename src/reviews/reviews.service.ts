@@ -126,6 +126,30 @@ export class ReviewsService {
     }
   }
 
+  /**
+   * One author's reviews, each with the id of its restaurant so the profile
+   * can link to it (reviews only carry the restaurant's source URL).
+   */
+  async findByAuthor(authorId: string, limit = 100) {
+    const reviews = await this.reviewModel
+      .find({ authorId })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+      .exec();
+    const urls = [...new Set(reviews.map((review) => review.urlGoc))];
+    const places = await this.restaurantModel
+      .find({ urlGoc: { $in: urls } }, { urlGoc: 1, avatarUrl: 1 })
+      .lean()
+      .exec();
+    const byUrl = new Map(places.map((place) => [place.urlGoc, place]));
+    return reviews.map((review) => ({
+      ...review,
+      restaurantId: byUrl.get(review.urlGoc)?._id?.toString() ?? null,
+      restaurantImage: byUrl.get(review.urlGoc)?.avatarUrl ?? null,
+    }));
+  }
+
   async findByRestaurantUrl(url: string, limit = 200): Promise<Review[]> {
     if (!url) return [];
     return this.reviewModel

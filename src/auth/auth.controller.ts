@@ -23,6 +23,7 @@ import {
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { GoogleCallbackGuard } from './google-callback.guard';
 import { UpdateUserDto } from 'src/users/dto/update-user.dto';
@@ -143,6 +144,20 @@ export class AuthController {
     @Body() updateUserDto: UpdateUserDto,
   ) {
     return this.authService.updateProfile(req.user.sub, updateUserDto);
+  }
+
+  // Same budget as login: this endpoint also checks a password.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseGuards(JwtAuthGuard)
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  changePassword(@Req() req: RequestWithUser, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(
+      req.user.sub,
+      req.user.sid,
+      dto.currentPassword,
+      dto.newPassword,
+    );
   }
 
   /**

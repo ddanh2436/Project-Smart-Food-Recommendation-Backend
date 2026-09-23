@@ -108,6 +108,22 @@ export class User {
   bio?: string;
 
   /**
+   * One name field, written the way the person writes it. Separate first and
+   * last names reorder a Vietnamese name ("Duy Anh Đào" for Đào Duy Anh).
+   * firstName/lastName stay for accounts that already filled them in.
+   */
+  @Prop({ required: false, maxlength: 60 })
+  fullName?: string;
+
+  /** The city they usually eat in, for suggestions: hanoi | hcmc | danang. */
+  @Prop({ required: false })
+  homeCity?: string;
+
+  /** Dishes and kinds of place they like, from TASTE_TAGS. */
+  @Prop({ type: [String], default: undefined })
+  favoriteTags?: string[];
+
+  /**
    * Set for accounts created through Google OAuth. Those accounts get a random
    * password they can never know, so password login must be refused for them
    * rather than failing with a confusing "wrong password".
