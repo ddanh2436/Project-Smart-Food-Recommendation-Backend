@@ -221,8 +221,10 @@ export class AuthService {
     }
 
     if (user) {
-      // Keep the avatar in sync with Google.
-      if (googleUser.picture && user.picture !== googleUser.picture) {
+      // Keep the avatar in sync with Google, unless the user has put their
+      // own picture up: overwriting that on every sign-in would undo it.
+      const ownPicture = user.picture && !user.picture.includes('googleusercontent.com');
+      if (googleUser.picture && !ownPicture && user.picture !== googleUser.picture) {
         user = await this.usersService.updateProfileFields(
           user._id.toString(),
           { picture: googleUser.picture },
@@ -249,6 +251,39 @@ export class AuthService {
       throw new BadRequestException('Could not sign in with Google');
     }
     return this.issueTokens(user);
+  }
+
+  /**
+   * Change the password, given the current one.
+   *
+   * Every other signed-in device is signed out: a password change is what
+   * someone does when they think the account is compromised, and leaving the
+   * old sessions alive would leave the intruder in. This device keeps its
+   * session, so the user is not bounced to the login page for doing it.
+   */
+  async changePassword(
+    userId: string,
+    sid: string | undefined,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ success: boolean }> {
+    const user = await this.usersService.findByIdWithPassword(userId);
+    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (user.provider === 'google') {
+      throw new BadRequestException(
+        'This account signs in with Google and has no password to change.',
+      );
+    }
+    const matches = await bcrypt.compare(currentPassword, user.password);
+    if (!matches) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    if (currentPassword === newPassword) {
+      throw new BadRequestException('The new password is the same as the current one');
+    }
+    await this.usersService.setPassword(userId, newPassword);
+    await this.usersService.removeOtherRefreshSessions(userId, sid);
+    return { success: true };
   }
 
   async getProfile(userId: string) {

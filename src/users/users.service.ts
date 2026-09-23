@@ -22,6 +22,9 @@ const EDITABLE_PROFILE_FIELDS = [
   'designation',
   'bio',
   'picture',
+  'fullName',
+  'homeCity',
+  'favoriteTags',
 ] as const;
 
 @Injectable()
@@ -79,6 +82,32 @@ export class UsersService {
     return this.userModel
       .findOne({ email: email.toLowerCase().trim() })
       .select('+password')
+      .exec();
+  }
+
+  /** Includes the password hash; only for changing the password. */
+  async findByIdWithPassword(id: string): Promise<UserDocument | null> {
+    if (!mongoose.Types.ObjectId.isValid(id)) return null;
+    return this.userModel.findById(id).select('+password').exec();
+  }
+
+  /** Set a new password; the schema's pre-save hook hashes it. */
+  async setPassword(userId: string, password: string): Promise<void> {
+    const user = await this.findByIdWithPassword(userId);
+    if (!user) throw new NotFoundException(`User #${userId} not found`);
+    user.password = password;
+    await user.save();
+  }
+
+  /** Sign out every device except `keepSid` (all of them when it is unknown). */
+  async removeOtherRefreshSessions(userId: string, keepSid?: string): Promise<void> {
+    this.assertValidId(userId);
+    if (!keepSid) return this.clearRefreshSessions(userId);
+    await this.userModel
+      .updateOne(
+        { _id: userId },
+        { $pull: { refreshSessions: { sid: { $ne: keepSid } } } },
+      )
       .exec();
   }
 

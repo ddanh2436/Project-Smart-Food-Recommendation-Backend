@@ -57,6 +57,13 @@ export class ReviewsController {
     });
   }
 
+  /** The signed-in user's own reviews, newest first, for their profile. */
+  @UseGuards(JwtAuthGuard)
+  @Get('mine')
+  async mine(@Req() req: MaybeAuthedRequest) {
+    return this.reviewsService.findByAuthor(req.user!.sub);
+  }
+
   @Get()
   async findAll(@Query('url') url: string) {
     if (!url) {
