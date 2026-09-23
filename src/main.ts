@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
@@ -6,7 +7,9 @@ import compression from 'compression';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
   const config = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
@@ -34,6 +37,26 @@ async function bootstrap() {
     );
     process.exit(1);
   }
+
+  /**
+   * Trust the platform's proxy, so `req.ip` is the client and not the proxy.
+   *
+   * Render terminates connections at its own proxy, so without this every
+   * request arrived from the proxy's address. The rate limiter keys on
+   * `req.ip`, which made each limit one bucket shared by the whole site: the
+   * global 120 requests a minute covered every visitor at once (a home page
+   * load alone makes about ten calls), and ten failed logins by anyone locked
+   * every user out of signing in.
+   *
+   * The value is a hop count, not `true`. `true` would believe the leftmost
+   * X-Forwarded-For entry, which the client writes itself, and anyone could
+   * then pick a fresh "IP" per request and walk straight past the limits.
+   * Trusting exactly the hops the platform adds takes the address the nearest
+   * trusted proxy saw. Check the result with GET /admin/client-ip after a
+   * deploy, and raise TRUST_PROXY_HOPS if it still shows a proxy address.
+   */
+  const hops = Number(config.get<string>('TRUST_PROXY_HOPS') ?? '1');
+  app.set('trust proxy', Number.isInteger(hops) && hops >= 0 ? hops : 1);
 
   app.use(helmet());
   app.use(compression());

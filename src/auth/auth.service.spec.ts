@@ -213,7 +213,7 @@ describe('AuthService', () => {
       // Pre-account takeover: someone registered this address with a password
       // before its real owner ever arrived. Signing the owner in to it would
       // hand the attacker a shared account.
-      usersService.findByEmailOrNull!.mockResolvedValue(
+      (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(
         makeUser({ provider: null }),
       );
 
@@ -224,7 +224,7 @@ describe('AuthService', () => {
     });
 
     it('still signs in an account that was created through Google', async () => {
-      usersService.findByEmailOrNull!.mockResolvedValue(
+      (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(
         makeUser({ provider: 'google' }),
       );
 
