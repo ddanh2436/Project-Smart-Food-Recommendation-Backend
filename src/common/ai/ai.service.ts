@@ -90,6 +90,20 @@ export class AiService {
     private readonly configService: ConfigService,
   ) {}
 
+  /**
+   * The shared secret the AI service requires on every data endpoint.
+   *
+   * The Space is public, so without it anyone could call the AI directly and
+   * skip every limit this API enforces — including the review-insights
+   * endpoint, where one request can hold the Space's only CPU for minutes.
+   * Sent only when configured, so a rollout can set it here first and on the
+   * Space second without an outage in between.
+   */
+  private get authHeaders(): Record<string, string> {
+    const token = this.configService.get<string>('INTERNAL_API_TOKEN');
+    return token ? { 'x-internal-token': token } : {};
+  }
+
   get baseUrl(): string {
     const url =
       this.configService.get<string>('AI_SERVICE_URL') ??
@@ -166,7 +180,7 @@ export class AiService {
           `${this.baseUrl}/predict-food`,
           formData,
           {
-            headers: formData.getHeaders(),
+            headers: { ...formData.getHeaders(), ...this.authHeaders },
             timeout: 60_000,
             maxBodyLength: Infinity,
           },
@@ -188,6 +202,7 @@ export class AiService {
       const response = await firstValueFrom(
         this.httpService.post<T>(`${this.baseUrl}${path}`, payload, {
           timeout,
+          headers: this.authHeaders,
         }),
       );
       return response.data;
