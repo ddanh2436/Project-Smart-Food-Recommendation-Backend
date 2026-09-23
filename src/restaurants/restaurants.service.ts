@@ -739,10 +739,15 @@ export class RestaurantsService {
       return values.findIndex((v) => v === best);
     };
 
-    for (const { raw } of SCORE_FIELDS) {
-      const values = places.map((p) =>
-        typeof p[raw] === 'number' && p[raw] > 0 ? (p[raw] as number) : null,
-      );
+    // The adjusted score, as everywhere else the site shows a score: on the
+    // raw one a 10.0 from three reviews beats a 9.2 from thirty.
+    for (const { raw, adjusted } of SCORE_FIELDS) {
+      const values = places.map((p) => {
+        const value = typeof p[adjusted] === 'number' ? p[adjusted] : p[raw];
+        return typeof value === 'number' && value > 0
+          ? Math.round(value * 100) / 100
+          : null;
+      });
       rows.push({ key: raw, kind: 'score', values, winner: decide(values) });
     }
 
