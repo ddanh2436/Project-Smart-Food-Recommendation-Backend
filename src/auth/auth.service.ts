@@ -22,6 +22,18 @@ export interface GoogleProfile {
   picture?: string;
 }
 
+/**
+ * Thrown when a Google sign-in lands on an email that already belongs to a
+ * password account. The controller turns it into a specific redirect, so the
+ * sign-in page can tell the user what to do instead of a generic failure.
+ */
+export class EmailRegisteredWithPasswordError extends Error {
+  constructor() {
+    super('This email is registered with a password');
+    this.name = 'EmailRegisteredWithPasswordError';
+  }
+}
+
 export interface Tokens {
   accessToken: string;
   refreshToken: string;
@@ -156,6 +168,20 @@ export class AuthService {
     }
 
     let user = await this.usersService.findByEmailOrNull(googleUser.email);
+
+    /**
+     * Never sign a Google user in to a password account.
+     *
+     * Registration does not verify email addresses, so the owner of a password
+     * account is only whoever typed the address first. Linking on email let an
+     * attacker register victim@gmail.com with a password of their choosing and
+     * wait: when the real owner later used "Continue with Google", they were
+     * signed in to the attacker's account — which the attacker could still
+     * open with the password. Only accounts created through Google are joined.
+     */
+    if (user && user.provider !== 'google') {
+      throw new EmailRegisteredWithPasswordError();
+    }
 
     if (user) {
       // Keep the avatar in sync with Google.

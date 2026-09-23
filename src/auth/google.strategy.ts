@@ -3,6 +3,8 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { Strategy, VerifyCallback } from 'passport-google-oauth20';
 import { GoogleProfile } from './auth.service';
+import type { StateStore } from 'passport-oauth2';
+import { CookieStateStore } from './oauth-state.store';
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
@@ -38,6 +40,13 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       clientSecret: clientSecret || 'missing-google-client-secret',
       callbackURL: `${backendUrl}/auth/google/callback`,
       scope: ['email', 'profile'],
+      // Bind the flow to the browser that started it; see CookieStateStore.
+      // Secure cookies only over https, so local http development still works.
+      // The cast is for the typings only: they declare overloaded signatures,
+      // while passport-oauth2 dispatches on the implementation's arity (3 here).
+      store: new CookieStateStore(
+        backendUrl.startsWith('https://'),
+      ) as unknown as StateStore,
     });
   }
 
@@ -46,12 +55,18 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     _refreshToken: string,
     profile: {
       name?: { givenName?: string; familyName?: string };
-      emails?: Array<{ value: string }>;
+      emails?: Array<{ value: string; verified?: boolean }>;
       photos?: Array<{ value: string }>;
     },
     done: VerifyCallback,
   ): void {
-    const email = profile.emails?.[0]?.value;
+    const primary = profile.emails?.[0];
+    const email = primary?.value;
+    // Only a Google-verified address may stand for an account. Sign-in links on
+    // the email alone, so an unverified one would be a way into someone else's.
+    if (email && primary?.verified === false) {
+      return done(new Error('Google account email is not verified'), undefined);
+    }
     if (!email) {
       // Optional chaining throughout: the old code indexed emails[0].value
       // directly, so a Google account with no public email threw a TypeError

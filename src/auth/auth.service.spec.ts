@@ -7,7 +7,10 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { AuthService } from './auth.service';
+import {
+  AuthService,
+  EmailRegisteredWithPasswordError,
+} from './auth.service';
 import { UsersService } from 'src/users/users.service';
 
 /**
@@ -204,6 +207,29 @@ describe('AuthService', () => {
       // 32 random bytes as hex. The old code used ~6 chars from Math.random().
       expect(payload.password).toHaveLength(64);
       expect(payload.provider).toBe('google');
+    });
+
+    it('refuses to sign a Google user in to a password account with the same email', async () => {
+      // Pre-account takeover: someone registered this address with a password
+      // before its real owner ever arrived. Signing the owner in to it would
+      // hand the attacker a shared account.
+      usersService.findByEmailOrNull!.mockResolvedValue(
+        makeUser({ provider: null }),
+      );
+
+      await expect(
+        service.signInWithGoogle({ email: 'a@b.com' }),
+      ).rejects.toBeInstanceOf(EmailRegisteredWithPasswordError);
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('still signs in an account that was created through Google', async () => {
+      usersService.findByEmailOrNull!.mockResolvedValue(
+        makeUser({ provider: 'google' }),
+      );
+
+      const tokens = await service.signInWithGoogle({ email: 'a@b.com' });
+      expect(tokens.accessToken).toBeDefined();
     });
   });
 });
