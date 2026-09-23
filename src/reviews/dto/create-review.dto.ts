@@ -1,6 +1,7 @@
 import {
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUrl,
   Max,
@@ -17,10 +18,15 @@ import {
  * and unbounded `noiDung` strings.
  */
 export class CreateReviewDto {
+  /**
+   * Accepted for older clients and then ignored: the stored name is read from
+   * the restaurant the review points at, so a review cannot be filed under a
+   * name the restaurant does not have.
+   */
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(200)
-  tenQuan: string;
+  tenQuan?: string;
 
   /** Links the review to its restaurant. */
   @IsString()

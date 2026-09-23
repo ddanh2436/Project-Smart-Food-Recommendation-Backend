@@ -16,7 +16,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AdminGuard } from 'src/common/guards/admin.guard';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
-import { OptionalJwtAuthGuard } from 'src/auth/optional-jwt-auth.guard';
+import { UsersService } from 'src/users/users.service';
 import { ReviewsService } from './reviews.service';
 import { CreateReviewDto } from './dto/create-review.dto';
 
@@ -26,27 +26,35 @@ interface MaybeAuthedRequest extends Request {
 
 @Controller('reviews')
 export class ReviewsController {
-  constructor(private readonly reviewsService: ReviewsService) {}
+  constructor(
+    private readonly reviewsService: ReviewsService,
+    private readonly usersService: UsersService,
+  ) {}
 
   /**
-   * Post a review.
+   * Post a review. Signed-in members only, one review per restaurant.
    *
-   * Rate limited to 5 per minute per IP: this endpoint writes to the database
-   * and triggers an AI inference call, and previously had no limit at all.
-   * Authentication is optional so the existing anonymous flow keeps working,
-   * but a signed-in user's review is attributed to them.
+   * Anonymous posting is gone. Each review counts towards the adjusted score
+   * that orders every listing, so anonymous reviews were a lever anyone could
+   * pull, at five a minute, to move any restaurant up the rankings. An account
+   * turns that into something the one-per-restaurant rule can hold.
+   *
+   * The public author name is the username. It used to be the part of the
+   * email before the "@", published on every review — for a Gmail address,
+   * that is the address.
    */
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @UseGuards(OptionalJwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   @Post()
   async create(
     @Body() createReviewDto: CreateReviewDto,
     @Req() req: MaybeAuthedRequest,
   ) {
-    const author = req.user
-      ? { id: req.user.sub, name: req.user.email.split('@')[0] }
-      : undefined;
-    return this.reviewsService.create(createReviewDto, author);
+    const user = await this.usersService.findOne(req.user!.sub);
+    return this.reviewsService.create(createReviewDto, {
+      id: user._id.toString(),
+      name: user.username,
+    });
   }
 
   @Get()

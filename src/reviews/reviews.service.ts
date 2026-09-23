@@ -1,6 +1,16 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import mongoose, { Model } from 'mongoose';
+import {
+  Restaurant,
+  RestaurantDocument,
+} from 'src/restaurants/schemas/restaurant.schema';
 import { AiService } from 'src/common/ai/ai.service';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { Review, ReviewDocument } from './schemas/review.schema';
@@ -21,7 +31,8 @@ const INSIGHTS_LIMIT = 300;
 
 interface ReviewAuthor {
   id: string;
-  name?: string;
+  /** The member's public username — never anything derived from the email. */
+  name: string;
 }
 
 @Injectable()
@@ -30,13 +41,43 @@ export class ReviewsService {
 
   constructor(
     @InjectModel(Review.name) private reviewModel: Model<ReviewDocument>,
+    @InjectModel(Restaurant.name)
+    private restaurantModel: Model<RestaurantDocument>,
     private readonly aiService: AiService,
   ) {}
 
   async create(
     createReviewDto: CreateReviewDto,
-    author?: ReviewAuthor,
+    author: ReviewAuthor,
   ): Promise<Review> {
+    /**
+     * The review has to belong to a restaurant that exists, and it takes the
+     * restaurant's name from the database rather than from the request.
+     *
+     * Before, `urlGoc` could be any URL and `tenQuan` any string, and a review
+     * counted towards `reviewCount` — which feeds the adjusted score that orders
+     * every listing. Anyone could lift a restaurant up the rankings by posting
+     * reviews at it, or file reviews under a name it does not have.
+     */
+    const restaurant = await this.restaurantModel
+      .findOne({ urlGoc: createReviewDto.urlGoc })
+      .select('tenQuan')
+      .lean()
+      .exec();
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    // Checked here for a clear message; the unique index is what actually
+    // guarantees it when two requests arrive together.
+    const existing = await this.reviewModel.exists({
+      authorId: author.id,
+      urlGoc: createReviewDto.urlGoc,
+    });
+    if (existing) {
+      throw new ConflictException('You have already reviewed this restaurant');
+    }
+
     const sentiment = await this.aiService.sentiment(createReviewDto.noiDung);
 
     /**
@@ -54,6 +95,7 @@ export class ReviewsService {
      */
     const created = new this.reviewModel({
       ...createReviewDto,
+      tenQuan: restaurant.tenQuan,
       // Sentiment is assigned server-side from the AI service. It is not read
       // from the request body, so a client cannot label its own review.
       ...(sentiment.available === false
@@ -62,8 +104,8 @@ export class ReviewsService {
             aiSentimentLabel: sentiment.label,
             aiSentimentScore: sentiment.score,
           }),
-      authorId: author?.id,
-      authorName: author?.name,
+      authorId: author.id,
+      authorName: author.name,
     });
 
     if (sentiment.available === false) {
@@ -73,7 +115,15 @@ export class ReviewsService {
       );
     }
 
-    return created.save();
+    try {
+      return await created.save();
+    } catch (error: any) {
+      // Lost the race to a simultaneous request from the same member.
+      if (error?.code === 11000) {
+        throw new ConflictException('You have already reviewed this restaurant');
+      }
+      throw error;
+    }
   }
 
   async findByRestaurantUrl(url: string, limit = 200): Promise<Review[]> {
@@ -244,6 +294,10 @@ export class ReviewsService {
   }
 
   async deleteOwn(reviewId: string, authorId: string) {
+    // A malformed id made findById throw a CastError, which surfaced as a 500.
+    if (!mongoose.Types.ObjectId.isValid(reviewId)) {
+      throw new BadRequestException('Invalid review id');
+    }
     const review = await this.reviewModel.findById(reviewId).exec();
     if (!review) {
       throw new NotFoundException('Review not found');

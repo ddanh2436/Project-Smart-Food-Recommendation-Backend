@@ -41,3 +41,11 @@ export const ReviewSchema = SchemaFactory.createForClass(Review);
 // Serving a restaurant page means "this restaurant's reviews, newest first",
 // which this compound index answers without an in-memory sort.
 ReviewSchema.index({ urlGoc: 1, createdAt: -1 });
+
+// One review per member per restaurant, enforced by the database rather than
+// only by a check in the service, which two simultaneous requests could both
+// pass. Partial, so the crawled reviews — which have no author — are exempt.
+ReviewSchema.index(
+  { authorId: 1, urlGoc: 1 },
+  { unique: true, partialFilterExpression: { authorId: { $type: 'string' } } },
+);
