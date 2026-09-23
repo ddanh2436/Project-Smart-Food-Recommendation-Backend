@@ -7,6 +7,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import {
   AuthService,
   EmailRegisteredWithPasswordError,
@@ -44,8 +45,11 @@ describe('AuthService', () => {
       findByEmailOrNull: jest.fn(),
       findByUsernameOrNull: jest.fn(),
       findByEmailWithPassword: jest.fn(),
-      findByIdWithRefreshToken: jest.fn(),
-      setRefreshTokenHash: jest.fn().mockResolvedValue(undefined),
+      findByIdWithSessions: jest.fn(),
+      addRefreshSession: jest.fn().mockResolvedValue(undefined),
+      rotateRefreshSession: jest.fn().mockResolvedValue(true),
+      removeRefreshSession: jest.fn().mockResolvedValue(undefined),
+      clearRefreshSessions: jest.fn().mockResolvedValue(undefined),
       create: jest.fn(),
       findOne: jest.fn(),
       updateProfileFields: jest.fn(),
@@ -54,6 +58,7 @@ describe('AuthService', () => {
     jwtService = {
       signAsync: jest.fn().mockResolvedValue('signed.jwt.token'),
       verifyAsync: jest.fn(),
+      decode: jest.fn().mockReturnValue({ exp: Math.floor(Date.now() / 1000) + 3600 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -71,9 +76,23 @@ describe('AuthService', () => {
     service = module.get(AuthService);
   });
 
-  describe('refresh token storage', () => {
-    it('stores a bcrypt HASH of the refresh token, never the token itself', async () => {
-      // Drive token issuance through register, which needs no existing user.
+  describe('refresh sessions', () => {
+    const sha256 = (v: string) =>
+      crypto.createHash('sha256').update(v).digest('hex');
+    const future = () => new Date(Date.now() + 3600_000);
+
+    const withSession = (session: Record<string, unknown>) => {
+      (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
+        sub: 'user-1',
+        email: 'a@b.com',
+        sid: 's1',
+      });
+      (usersService.findByIdWithSessions as jest.Mock).mockResolvedValue(
+        makeUser({ refreshSessions: [{ sid: 's1', ...session }] }),
+      );
+    };
+
+    it('stores a SHA-256 of the refresh token in a new session, never the token', async () => {
       (usersService.findByEmailOrNull as jest.Mock).mockResolvedValue(null);
       (usersService.findByUsernameOrNull as jest.Mock).mockResolvedValue(null);
       (usersService.create as jest.Mock).mockResolvedValue(makeUser());
@@ -84,51 +103,96 @@ describe('AuthService', () => {
         password: 'secret123',
       } as never);
 
-      const [, storedValue] = (usersService.setRefreshTokenHash as jest.Mock)
-        .mock.calls.at(-1)!;
-
-      // The regression this guards: the raw token used to be written straight
-      // to the database, which also made bcrypt.compare always fail.
-      expect(storedValue).not.toBe('signed.jwt.token');
-      expect(storedValue).toMatch(/^\$2[aby]\$/);
-      await expect(
-        bcrypt.compare('signed.jwt.token', storedValue as string),
-      ).resolves.toBe(true);
+      const [userId, session, max] = (
+        usersService.addRefreshSession as jest.Mock
+      ).mock.calls.at(-1)!;
+      expect(userId).toBe('user-1');
+      expect(session.hash).toBe(sha256('signed.jwt.token'));
+      expect(session.sid).toEqual(expect.any(String));
+      expect(max).toBe(5);
     });
 
-    it('accepts a refresh token that matches the stored hash', async () => {
-      const hash = await bcrypt.hash('signed.jwt.token', 10);
-      (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
-        sub: 'user-1',
-        email: 'a@b.com',
-      });
-      (usersService.findByIdWithRefreshToken as jest.Mock).mockResolvedValue(
-        makeUser({ hashedRefreshToken: hash }),
+    it('puts a unique jti on every refresh token', async () => {
+      (usersService.findByEmailWithPassword as jest.Mock).mockResolvedValue(
+        makeUser({ password: await bcrypt.hash('pw-123456', 10) }),
       );
+      await service.login({ email: 'a@b.com', password: 'pw-123456' } as never);
+      await service.login({ email: 'a@b.com', password: 'pw-123456' } as never);
 
-      await expect(service.refresh('signed.jwt.token')).resolves.toEqual({
+      const jtis = (jwtService.signAsync as jest.Mock).mock.calls
+        .map(([payload]) => payload.jti)
+        .filter(Boolean);
+      expect(jtis).toHaveLength(2);
+      expect(jtis[0]).not.toBe(jtis[1]);
+    });
+
+    it('rotates a session whose current token is presented', async () => {
+      withSession({ hash: sha256('current.jwt.token'), expiresAt: future() });
+
+      await expect(service.refresh('current.jwt.token')).resolves.toEqual({
         accessToken: 'signed.jwt.token',
         refreshToken: 'signed.jwt.token',
       });
+      expect(usersService.rotateRefreshSession).toHaveBeenCalledWith(
+        'user-1',
+        's1',
+        sha256('current.jwt.token'),
+        sha256('signed.jwt.token'),
+        expect.any(Date),
+      );
     });
 
-    it('revokes the session when a token does not match the stored hash', async () => {
+    it('refuses without revoking when a concurrent refresh won the rotation', async () => {
+      withSession({ hash: sha256('current.jwt.token'), expiresAt: future() });
+      (usersService.rotateRefreshSession as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.refresh('current.jwt.token')).rejects.toThrow(
+        'already used',
+      );
+      expect(usersService.removeRefreshSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses without revoking the token replaced a moment ago', async () => {
+      withSession({
+        hash: sha256('newer.jwt.token'),
+        prevHash: sha256('current.jwt.token'),
+        rotatedAt: new Date(),
+        expiresAt: future(),
+      });
+
+      await expect(service.refresh('current.jwt.token')).rejects.toThrow(
+        'already used',
+      );
+      expect(usersService.removeRefreshSession).not.toHaveBeenCalled();
+    });
+
+    it('revokes only that session when an old token is replayed', async () => {
+      withSession({
+        hash: sha256('newer.jwt.token'),
+        prevHash: sha256('other.jwt.token'),
+        rotatedAt: new Date(Date.now() - 10 * 60_000),
+        expiresAt: future(),
+      });
+
+      await expect(service.refresh('current.jwt.token')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(usersService.removeRefreshSession).toHaveBeenCalledWith(
+        'user-1',
+        's1',
+      );
+      expect(usersService.clearRefreshSessions).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token from before sessions existed', async () => {
       (jwtService.verifyAsync as jest.Mock).mockResolvedValue({
         sub: 'user-1',
         email: 'a@b.com',
       });
-      (usersService.findByIdWithRefreshToken as jest.Mock).mockResolvedValue(
-        makeUser({ hashedRefreshToken: await bcrypt.hash('other-token', 10) }),
-      );
-
-      await expect(service.refresh('signed.jwt.token')).rejects.toThrow(
+      await expect(service.refresh('legacy.jwt.token')).rejects.toThrow(
         ForbiddenException,
       );
-      // A replayed token means possible theft, so the session is cleared.
-      expect(usersService.setRefreshTokenHash).toHaveBeenCalledWith(
-        'user-1',
-        null,
-      );
+      expect(usersService.findByIdWithSessions).not.toHaveBeenCalled();
     });
 
     it('rejects a refresh token that fails JWT verification without a DB read', async () => {
@@ -137,7 +201,17 @@ describe('AuthService', () => {
       await expect(service.refresh('forged.token')).rejects.toThrow(
         ForbiddenException,
       );
-      expect(usersService.findByIdWithRefreshToken).not.toHaveBeenCalled();
+      expect(usersService.findByIdWithSessions).not.toHaveBeenCalled();
+    });
+
+    it('logs out one device when the session is known, all otherwise', async () => {
+      await service.logout('user-1', 's1');
+      expect(usersService.removeRefreshSession).toHaveBeenCalledWith(
+        'user-1',
+        's1',
+      );
+      await service.logout('user-1');
+      expect(usersService.clearRefreshSessions).toHaveBeenCalledWith('user-1');
     });
   });
 

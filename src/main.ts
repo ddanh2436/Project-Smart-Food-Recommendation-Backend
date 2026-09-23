@@ -102,6 +102,22 @@ async function bootstrap() {
     allowedOrigins.push(frontendUrl.replace(/\/+$/, ''));
   }
 
+  // Preview URLs look like `<project>-<hash>-<team>.vercel.app`. Both ends are
+  // pinned: a project prefix alone still matches a stranger's project named
+  // `<project>-anything`, but the team slug is unique to the owner's account.
+  const slug = (key: string) => {
+    const value = (config.get<string>(key) ?? '').trim().toLowerCase();
+    return /^[a-z0-9-]+$/.test(value) ? value : '';
+  };
+  const previewProject = slug('VERCEL_PREVIEW_PROJECT');
+  const previewTeam = slug('VERCEL_TEAM_SLUG');
+  const previewPattern =
+    previewProject && previewTeam
+      ? new RegExp(
+          `^https://${previewProject}-[a-z0-9-]+-${previewTeam}[.]vercel[.]app$`,
+        )
+      : null;
+
   app.enableCors({
     origin: (origin, callback) => {
       // Requests with no Origin header (curl, server-to-server, same-origin
@@ -111,11 +127,15 @@ async function bootstrap() {
         return callback(null, true);
       }
       // Vercel preview deployments get a new hostname per commit, so match the
-      // project's preview pattern rather than listing every one.
-      if (/^https:\/\/[\w-]+\.vercel\.app$/.test(origin)) {
+      // project's preview pattern rather than listing every one. Only this
+      // project's: any `*.vercel.app` let anyone deploy a page that could make
+      // credentialed calls to the API. Unset means no previews are allowed.
+      if (previewPattern?.test(origin)) {
         return callback(null, true);
       }
-      return callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+      // No CORS headers is how a browser is told no. Passing an Error instead
+      // turned every refused preflight into a logged 500.
+      return callback(null, false);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,

@@ -13,9 +13,35 @@ export type UserDocument = HydratedDocument<User>;
 function stripSecrets(_doc: unknown, ret: Record<string, any>) {
   delete ret.password;
   delete ret.hashedRefreshToken;
+  delete ret.refreshSessions;
   delete ret.__v;
   return ret;
 }
+
+/**
+ * A signed-in device. `hash` is the SHA-256 of that device's current refresh
+ * token; `prevHash` is the one it replaced, kept briefly so a request that was
+ * already in flight when the token rotated is not mistaken for theft.
+ */
+@Schema({ _id: false })
+export class RefreshSession {
+  @Prop({ required: true })
+  sid: string;
+
+  @Prop({ required: true })
+  hash: string;
+
+  @Prop()
+  prevHash?: string;
+
+  @Prop()
+  rotatedAt?: Date;
+
+  @Prop({ required: true })
+  expiresAt: Date;
+}
+
+export const RefreshSessionSchema = SchemaFactory.createForClass(RefreshSession);
 
 @Schema({
   timestamps: true,
@@ -50,6 +76,14 @@ export class User {
    */
   @Prop({ required: false, select: false })
   hashedRefreshToken?: string;
+
+  /**
+   * One entry per signed-in device. Replaces `hashedRefreshToken`, which held
+   * a single session, so signing in on a phone signed the laptop out. It is
+   * cleared on the next sign-in; tokens minted against it are not accepted.
+   */
+  @Prop({ type: [RefreshSessionSchema], select: false, default: undefined })
+  refreshSessions?: RefreshSession[];
 
   @Prop({ required: false })
   picture?: string;

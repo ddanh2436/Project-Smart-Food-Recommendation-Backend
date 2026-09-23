@@ -28,7 +28,7 @@ import { GoogleCallbackGuard } from './google-callback.guard';
 import { UpdateUserDto } from 'src/users/dto/update-user.dto';
 
 interface RequestWithUser extends Request {
-  user: { sub: string; email: string };
+  user: { sub: string; email: string; sid?: string };
 }
 
 interface RequestWithGoogleUser extends Request {
@@ -118,7 +118,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Req() req: RequestWithUser) {
-    return this.authService.logout(req.user.sub);
+    return this.authService.logout(req.user.sub, req.user.sid);
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })

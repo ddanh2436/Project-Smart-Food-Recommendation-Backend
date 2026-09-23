@@ -7,7 +7,11 @@ import { InjectModel } from '@nestjs/mongoose';
 import mongoose, { Model } from 'mongoose';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { User, UserDocument } from './schemas/user.schema';
+import {
+  RefreshSession,
+  User,
+  UserDocument,
+} from './schemas/user.schema';
 
 /** Fields a user is ever allowed to change about themselves. */
 const EDITABLE_PROFILE_FIELDS = [
@@ -78,19 +82,80 @@ export class UsersService {
       .exec();
   }
 
-  /** Includes the refresh-token hash; only for the refresh flow. */
-  async findByIdWithRefreshToken(id: string): Promise<UserDocument | null> {
+  /** Includes the per-device sessions; only for the refresh flow. */
+  async findByIdWithSessions(id: string): Promise<UserDocument | null> {
     if (!mongoose.Types.ObjectId.isValid(id)) return null;
-    return this.userModel.findById(id).select('+hashedRefreshToken').exec();
+    return this.userModel.findById(id).select('+refreshSessions').exec();
   }
 
-  async setRefreshTokenHash(
+  /**
+   * Record a new signed-in device, keeping the newest `max`. The oldest device
+   * is the one signed out when the limit is reached, which is also the one
+   * most likely to be forgotten or lost.
+   */
+  async addRefreshSession(
     userId: string,
-    hash: string | null,
+    session: RefreshSession,
+    max = 5,
   ): Promise<void> {
     this.assertValidId(userId);
     await this.userModel
-      .findByIdAndUpdate(userId, { hashedRefreshToken: hash })
+      .updateOne(
+        { _id: userId },
+        {
+          $push: { refreshSessions: { $each: [session], $slice: -max } },
+          $unset: { hashedRefreshToken: 1 },
+        },
+      )
+      .exec();
+  }
+
+  /**
+   * Swap a session's token for the next one, only if it still holds `oldHash`.
+   *
+   * The condition is what makes rotation safe under concurrency: two requests
+   * presenting the same token can both pass a read-then-write check, and each
+   * would hand out a valid successor. Here only one update can match.
+   */
+  async rotateRefreshSession(
+    userId: string,
+    sid: string,
+    oldHash: string,
+    newHash: string,
+    expiresAt: Date,
+  ): Promise<boolean> {
+    this.assertValidId(userId);
+    const result = await this.userModel
+      .updateOne(
+        { _id: userId, refreshSessions: { $elemMatch: { sid, hash: oldHash } } },
+        {
+          $set: {
+            'refreshSessions.$.hash': newHash,
+            'refreshSessions.$.prevHash': oldHash,
+            'refreshSessions.$.rotatedAt': new Date(),
+            'refreshSessions.$.expiresAt': expiresAt,
+          },
+        },
+      )
+      .exec();
+    return result.modifiedCount === 1;
+  }
+
+  async removeRefreshSession(userId: string, sid: string): Promise<void> {
+    this.assertValidId(userId);
+    await this.userModel
+      .updateOne({ _id: userId }, { $pull: { refreshSessions: { sid } } })
+      .exec();
+  }
+
+  /** Sign out every device. */
+  async clearRefreshSessions(userId: string): Promise<void> {
+    this.assertValidId(userId);
+    await this.userModel
+      .updateOne(
+        { _id: userId },
+        { $unset: { refreshSessions: 1, hashedRefreshToken: 1 } },
+      )
       .exec();
   }
 
