@@ -122,10 +122,11 @@ export class AiService {
 
   async chat(payload: {
     message: string;
-    history?: Array<{ role: 'user' | 'bot'; text: string }>;
+    history?: Array<{ role: 'user' | 'bot'; text: string; ids?: string[] }>;
     user_gps?: [number, number] | null;
     lang?: string;
     limit?: number;
+    prefs?: { favorite_tags: string[]; home_city: string } | null;
   }): Promise<AiChatResponse | null> {
     return this.post<AiChatResponse>('/chat', payload, 30_000);
   }

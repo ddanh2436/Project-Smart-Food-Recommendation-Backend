@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsLatitude,
+  IsMongoId,
   IsLongitude,
   IsNotEmpty,
   IsOptional,
@@ -19,6 +20,13 @@ export class ChatTurnDto {
   @IsString()
   @MaxLength(1000)
   text: string;
+
+  /** For a bot turn: the places it showed, so "quán thứ hai" can be resolved. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsMongoId({ each: true })
+  ids?: string[];
 }
 
 export class ChatRestaurantsDto {

@@ -7,6 +7,7 @@ import {
   Post,
   Query,
   Body,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -19,6 +20,8 @@ import { RestaurantsService } from './restaurants.service';
 import { RatingStatsService } from './rating-stats.service';
 import { QueryRestaurantsDto } from './dto/query-restaurants.dto';
 import { ChatRestaurantsDto } from './dto/chat-restaurants.dto';
+import { OptionalJwtAuthGuard } from 'src/auth/optional-jwt-auth.guard';
+import { UsersService } from 'src/users/users.service';
 
 /** Upload ceiling for dish photos. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -29,6 +32,7 @@ export class RestaurantsController {
   constructor(
     private readonly restaurantsService: RestaurantsService,
     private readonly ratingStatsService: RatingStatsService,
+    private readonly usersService: UsersService,
   ) {}
 
   /**
@@ -95,14 +99,35 @@ export class RestaurantsController {
 
   /** Conversational search. */
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @UseGuards(OptionalJwtAuthGuard)
   @Post('chat')
-  async chat(@Body() body: ChatRestaurantsDto) {
+  async chat(
+    @Body() body: ChatRestaurantsDto,
+    @Req() req: Request & { user?: { sub: string } },
+  ) {
+    // A signed-in diner's saved tastes nudge the ranking. Read here from the
+    // account rather than taken from the request, so they are the user's own.
+    let prefs: { favorite_tags: string[]; home_city: string } | null = null;
+    if (req.user?.sub) {
+      try {
+        const user = await this.usersService.findOne(req.user.sub);
+        if (user.favoriteTags?.length || user.homeCity) {
+          prefs = {
+            favorite_tags: user.favoriteTags ?? [],
+            home_city: user.homeCity ?? '',
+          };
+        }
+      } catch {
+        /* a deleted account chats anonymously */
+      }
+    }
     return this.restaurantsService.chat(
       body.message,
       body.history ?? [],
       body.userLat,
       body.userLon,
       body.lang ?? 'vi',
+      prefs,
     );
   }
 
