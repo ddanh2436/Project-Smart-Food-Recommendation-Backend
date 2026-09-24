@@ -476,14 +476,16 @@ export class RestaurantsService {
    */
   async chat(
     message: string,
-    history: Array<{ role: 'user' | 'bot'; text: string }> = [],
+    history: Array<{ role: 'user' | 'bot'; text: string; ids?: string[] }> = [],
     userLat?: number,
     userLon?: number,
     lang = 'vi',
+    prefs: { favorite_tags: string[]; home_city: string } | null = null,
   ) {
     const response = await this.aiService.chat({
       message,
       history,
+      prefs,
       user_gps:
         userLat !== undefined && userLon !== undefined
           ? [userLat, userLon]
