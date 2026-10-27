@@ -340,7 +340,7 @@ export class RestaurantsService {
       .exec();
 
     const wanted = new Set(descriptive.map((t) => t.toLowerCase()));
-    const scored = candidates
+    const matching = candidates
       .map((candidate) => {
         const theirs = this.parseTags(candidate.tags);
         const shared = theirs.filter((t) => wanted.has(t.toLowerCase())).length;
@@ -348,12 +348,16 @@ export class RestaurantsService {
           district && theirs[1]
             ? theirs[1].toLowerCase() === district.toLowerCase()
             : false;
-        return {
-          ...candidate,
-          _similarity: shared + (sameDistrict ? 2 : 0),
-        };
+        return { ...candidate, _similarity: shared, _sameDistrict: sameDistrict };
       })
-      .filter((candidate) => candidate._similarity > 0)
+      .filter((candidate) => candidate._similarity > 0);
+
+    // The heading reads "Quán tương tự tại <district>", so the district is
+    // only claimed when every suggestion is in it. A +2 bonus used to merely
+    // prefer it, and a Quận 3 page listed Quận 1, Quận 4 and Bình Thạnh.
+    const local = matching.filter((candidate) => candidate._sameDistrict);
+    const inDistrict = local.length >= MIN_SIMILAR_IN_DISTRICT;
+    const scored = (inDistrict ? local : matching)
       .sort(
         (a, b) =>
           b._similarity - a._similarity ||
@@ -365,7 +369,7 @@ export class RestaurantsService {
     return {
       data: scored,
       basedOn: descriptive.slice(0, 4),
-      district: district ?? null,
+      district: inDistrict ? district : null,
     };
   }
 
@@ -913,6 +917,12 @@ const MAX_IN_MEMORY = 8000;
 
 /** Radius for the "right now, near you" block. */
 const NEARBY_RADIUS_KM = 10;
+
+/**
+ * Same-district suggestions needed before "Quán tương tự" keeps to the
+ * district; below this the rail mixes districts and drops the "tại …" claim.
+ */
+const MIN_SIMILAR_IN_DISTRICT = 4;
 
 /**
  * What a lucky pick has to clear.
