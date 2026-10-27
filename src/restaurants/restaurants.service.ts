@@ -563,7 +563,10 @@ export class RestaurantsService {
     const hour = Math.floor(this.vietnamMinutesNow() / 60);
     if (hour >= 5 && hour < 10) return { meal: 'breakfast', tag: 'Ăn sáng' };
     if (hour >= 10 && hour < 14) return { meal: 'lunch', tag: 'Ăn trưa' };
-    if (hour >= 14 && hour < 21) return { meal: 'dinner', tag: 'Ăn tối' };
+    // No afternoon tag exists, so the afternoon is served from "Ăn tối" -- but
+    // labelled as the afternoon: "Đang là bữa tối" at 15:09 read as a bug.
+    if (hour >= 14 && hour < 17) return { meal: 'afternoon', tag: 'Ăn tối' };
+    if (hour >= 17 && hour < 21) return { meal: 'dinner', tag: 'Ăn tối' };
     return { meal: 'latenight', tag: 'Ăn đêm' };
   }
 
