@@ -324,16 +324,23 @@ export class RestaurantsService {
     // The first two entries are city and district, which every neighbour
     // shares and which therefore say nothing about similarity.
     const descriptive = tags.slice(2).filter((t) => t.length > 1);
-    const district = tags[1];
+    const [city, district] = tags;
 
     if (descriptive.length === 0) {
       return { data: [], basedOn: [] };
     }
 
+    // Never another city: when the district had too few, the fallback used to
+    // be the whole country, and a Saigon page suggested a place in Huế.
     const candidates = await this.restaurantModel
       .find({
         _id: { $ne: new mongoose.Types.ObjectId(id) },
-        tags: { $regex: this.escapeRegex(descriptive[0]), $options: 'i' },
+        $and: [
+          { tags: { $regex: this.escapeRegex(descriptive[0]), $options: 'i' } },
+          ...(city
+            ? [{ tags: { $regex: `['"]${this.escapeRegex(city)}['"]`, $options: 'i' } }]
+            : []),
+        ],
       })
       .limit(400)
       .lean()
