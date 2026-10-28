@@ -97,8 +97,11 @@ export class RestaurantsController {
     );
   }
 
-  /** Conversational search. */
-  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  /** Conversational search. Each call can reach the AI service's model quota. */
+  @Throttle({
+    default: { limit: 20, ttl: 60_000 },
+    daily: { limit: 300, ttl: 86_400_000 },
+  })
   @UseGuards(OptionalJwtAuthGuard)
   @Post('chat')
   async chat(

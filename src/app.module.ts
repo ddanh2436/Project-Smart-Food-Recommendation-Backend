@@ -42,6 +42,9 @@ import { ReviewsModule } from './reviews/reviews.module';
      */
     ThrottlerModule.forRoot([
       { name: 'default', ttl: 60_000, limit: 120 },
+      // A per-minute cap alone still lets one script run all day; this bounds
+      // the day. Generous here, tightened on the routes that cost money.
+      { name: 'daily', ttl: 86_400_000, limit: 20_000 },
     ]),
 
     UsersModule,

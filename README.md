@@ -1,128 +1,121 @@
 # VietNomNom — Backend API
 
-NestJS + MongoDB API for the VietNomNom food recommendation app. It owns
-authentication, restaurant and review data, and orchestrates calls to the
-separate FastAPI AI service.
+API NestJS + MongoDB của VietNomNom. Backend lo đăng nhập, dữ liệu quán và review, chấm điểm hiệu chỉnh, và là
+cầu nối duy nhất tới AI service.
 
-Deployment: see [DEPLOY.md](./DEPLOY.md).
+- Chạy thật: <https://project-smart-food-recommendation-backend.onrender.com> (Render)
+- Frontend: [Project-Smart-Food-Recommendation-Frontend](https://github.com/ddanh2436/Project-Smart-Food-Recommendation-Frontend)
+- AI service: [Project-Smart-Food-Recommendation-AI](https://github.com/ddanh2436/Project-Smart-Food-Recommendation-AI)
+- Triển khai: [DEPLOY.md](./DEPLOY.md)
 
-## Architecture
-
-```
-Frontend (Vercel) ──▶ this API (Render) ──▶ MongoDB Atlas
+```text
+Frontend (Vercel) ──▶ Backend (Render) ──▶ MongoDB Atlas
                             │
-                            └──▶ AI service (Hugging Face Spaces)
-                                 recommend · chat · sentiment · vision
+                            └──▶ AI service (HF Space): tìm kiếm · chat · cảm xúc review · nhận diện ảnh
 ```
 
-The API never talks to a model directly. Everything AI-related goes through
-`src/common/ai/ai.service.ts`, which is the single place that knows the AI
-service's URL, timeouts and failure behaviour. Every AI call degrades
-gracefully, because a free Hugging Face Space sleeps and cold-starts in ~50s —
-a sleeping model must never stop a user from browsing or posting a review.
+Mọi lời gọi AI đều đi qua `src/common/ai/ai.service.ts`, nơi duy nhất biết URL, timeout và cách xử lý lỗi của AI
+service. Space miễn phí có thể đang ngủ và mất khoảng 50 giây để dậy, nên mỗi lời gọi AI đều có đường lùi: tìm kiếm
+quay về khớp tên, review vẫn được lưu và gán nhãn cảm xúc sau.
 
-## Endpoints
+## Điểm hiệu chỉnh
+
+Điểm gốc lấy từ Foody không so được giữa các quán, vì quán điểm cao nhất thường lại là quán ít review nhất.
+`rating-stats.service.ts` kéo điểm của từng quán về mức trung bình toàn hệ thống, kéo mạnh hay nhẹ tuỳ số review
+(`CONFIDENCE = 5`), rồi ghi vào `diemTrungBinhAdj` và các điểm con `...Adj`. Danh sách, trang chủ, chatbot và trang
+quán đều hiển thị và sắp xếp theo điểm này. Chạy lại sau khi nhập thêm dữ liệu:
+
+```bash
+curl -X POST -H "x-admin-token: $ADMIN_TOKEN" $BACKEND_URL/restaurants/admin/rating-stats
+```
+
+## Endpoint
+
+🔒 cần Bearer access token · 🔑 cần `x-admin-token` · giới hạn tính theo IP
 
 ### Auth
-| Method | Path | Notes |
-|---|---|---|
-| `POST` | `/auth/register` | 5/min per IP |
-| `POST` | `/auth/login` | 10/min per IP |
-| `POST` | `/auth/refresh` | takes only the refresh token; the user id comes from its verified payload |
-| `POST` | `/auth/logout` | clears the stored refresh-token hash 🔒 |
-| `GET` | `/auth/google` → `/auth/google/callback` | tokens returned in the URL **fragment** |
+
+| Method | Path | Ghi chú |
+| --- | --- | --- |
+| `POST` | `/auth/register` | 5/phút |
+| `POST` | `/auth/login` | 10/phút |
+| `POST` | `/auth/refresh` | 30/phút; chỉ nhận refresh token, user lấy từ payload đã xác thực |
+| `POST` | `/auth/logout` | 🔒 xoá hash refresh token đã lưu |
+| `POST` | `/auth/change-password` | 🔒 10/phút |
 | `GET` `PATCH` | `/auth/profile` | 🔒 |
+| `GET` | `/auth/google` → `/auth/google/callback` | token trả về trong **fragment** của URL |
 
-### Restaurants
-| Method | Path | Notes |
-|---|---|---|
-| `GET` | `/restaurants` | validated query DTO; AI-ranked when `search` is set |
+### Quán
+
+| Method | Path | Ghi chú |
+| --- | --- | --- |
+| `GET` | `/restaurants` | lọc, sắp xếp, phân trang; có `search` thì AI xếp hạng; có `userLat`/`userLon` thì ưu tiên quán gần |
 | `GET` | `/restaurants/:id` | |
-| `GET` | `/restaurants/nearby` | `?lat=&lon=&radius=&limit=` |
-| `POST` | `/restaurants/chat` | conversational search, accepts `history` |
-| `POST` | `/restaurants/search-by-image` | 8MB limit, image MIME types only |
+| `GET` | `/restaurants/:id/similar` | quán tương tự, cùng quận nếu đủ, không thì cùng thành phố |
+| `GET` | `/restaurants/compare?ids=` | so sánh 2–3 quán |
+| `GET` | `/restaurants/suggestions` | đang mở, hợp bữa hiện tại, gần bạn |
+| `GET` | `/restaurants/surprise` | một quán ngẫu nhiên phù hợp; 30/phút |
+| `GET` | `/restaurants/nearby?lat=&lon=&radius=` | |
+| `POST` | `/restaurants/chat` | chatbot, nhận `history`; 20/phút và 300/ngày |
+| `POST` | `/restaurants/search-by-image` | tối đa 8 MB, chỉ nhận ảnh; 10/phút |
+| `GET` `POST` | `/restaurants/admin/rating-stats` | 🔑 xem / tính lại điểm hiệu chỉnh |
 
-### Reviews
-| Method | Path | Notes |
-|---|---|---|
-| `GET` | `/reviews?url=` | |
-| `GET` | `/reviews/insights?url=` | aspect-level AI digest |
-| `POST` | `/reviews` | 5/min; auth optional, attributed when present |
-| `DELETE` | `/reviews/:id` | own reviews only 🔒 |
-| `POST` | `/reviews/migrate-sentiment` | requires `x-admin-token` 🔑 |
+### Review
 
-### Health
-| Method | Path | Notes |
-|---|---|---|
-| `GET` | `/` | service info |
-| `GET` | `/health` | database state + AI URL; used by Render, exempt from rate limiting |
+| Method | Path | Ghi chú |
+| --- | --- | --- |
+| `GET` | `/reviews?url=` | review của một quán |
+| `GET` | `/reviews/insights?url=` | tóm tắt theo khía cạnh do AI tạo |
+| `GET` | `/reviews/mine` | 🔒 |
+| `POST` | `/reviews` | 🔒 5/phút; mỗi tài khoản một review cho mỗi quán |
+| `DELETE` | `/reviews/:id` | 🔒 chỉ xoá review của chính mình |
+| `POST` | `/reviews/migrate-sentiment` | 🔑 gán nhãn cảm xúc cho review chưa có nhãn |
 
-🔒 requires a Bearer access token · 🔑 requires `x-admin-token`
+### Khác
 
-## Configuration
+| Method | Path | Ghi chú |
+| --- | --- | --- |
+| `GET` | `/users/me`, `/users/:id` | 🔒 chỉ tài khoản của chính mình |
+| `GET` | `/health` | trạng thái DB; Render dùng để health check, không bị giới hạn |
+| `GET` | `/admin/client-ip` | 🔑 kiểm tra `TRUST_PROXY_HOPS` sau khi deploy |
 
-Copy `.env.example` to `.env`. The app **exits on boot** if `MONGODB_URI`,
-`JWT_SECRET` or `JWT_REFRESH_SECRET` is missing, and also if the two JWT secrets
-are identical — otherwise an access token would be accepted as a refresh token.
+## Cấu hình
 
-## What was fixed
+Chép `.env.example` thành `.env`. Ứng dụng **dừng ngay khi khởi động** nếu thiếu `MONGODB_URI`, `JWT_SECRET` hoặc
+`JWT_REFRESH_SECRET`, hoặc nếu hai JWT secret trùng nhau (khi đó access token sẽ được chấp nhận như refresh token).
 
-This service had several serious defects. They are documented here so they are
-not reintroduced.
+| Biến | Ghi chú |
+| --- | --- |
+| `MONGODB_URI`, `JWT_SECRET`, `JWT_REFRESH_SECRET` | bắt buộc |
+| `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | thời hạn token |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BACKEND_URL` | đăng nhập Google |
+| `FRONTEND_URL`, `CORS_ORIGINS` | origin được phép gọi API |
+| `VERCEL_PREVIEW_PROJECT`, `VERCEL_TEAM_SLUG` | cho phép preview deploy của đúng project này |
+| `AI_SERVICE_URL`, `INTERNAL_API_TOKEN` | địa chỉ AI service và token dùng chung với nó |
+| `ADMIN_TOKEN` | cho các route 🔑 |
+| `TRUST_PROXY_HOPS` | số proxy phía trước (Render: `1`) để giới hạn request nhận đúng IP người dùng |
+| `PORT`, `NODE_ENV` | |
 
-**Security**
-
-- `GET/PATCH/DELETE /users/:id` had **no guards at all** — anyone could list
-  every user and modify or delete any account. Now authenticated, and restricted
-  to the caller's own record.
-- `POST /reviews/migrate-sentiment` was public, triggering a full-collection
-  scan plus one AI inference per row on demand. Now admin-only.
-- Refresh tokens were stored **in plaintext**. The `_hashData` helper existed but
-  was never called, while the refresh path compared with `bcrypt.compare` — so
-  refresh could never succeed *and* a database dump handed out live sessions.
-- `hashedRefreshToken` had **no `@Prop()` decorator**, so Mongoose silently
-  discarded it on every save. This is why users were logged out after 15 minutes.
-- `ValidationPipe` ran without `whitelist`, so unknown body fields flowed into
-  Mongoose updates — a mass-assignment hole. `CreateReviewDto` had no validation
-  decorators whatsoever, letting a client set its own AI sentiment label.
-- Google accounts got a password from `Math.random().toString(36).substring(7)`
-  — roughly 6 characters from a predictable PRNG. Now 32 random bytes.
-- Login threw `NotFoundException` for an unknown email and `Unauthorized` for a
-  wrong password, which allowed email enumeration. Both now return the same 401.
-- OAuth tokens were passed in the redirect **query string**, where they land in
-  server logs, browser history and the `Referer` header. Now in the fragment.
-- `origin: '*'` with `credentials: true` is invalid per the CORS spec, so the
-  config was simultaneously wide open and broken for credentialed requests.
-- Startup logged environment variables to stdout.
-- No rate limiting anywhere; no `helmet`.
-
-**Correctness**
-
-- `update(+id)` / `remove(+id)` coerced a Mongo ObjectId with `+`, producing
-  `NaN`. Both were unreachable stubs returning strings.
-- `isOpenNow` returned `false` for an empty hours field, silently hiding every
-  restaurant whose opening hours had not been crawled.
-- The user's raw search string went straight into a `$regex`, so `"c++("` threw
-  and a crafted input could cause catastrophic backtracking.
-- `?limit=999999` was accepted and passed to the database.
-
-**Performance**
-
-- Any `openNow=true` request loaded the **entire** collection into memory with
-  no cap. The in-memory path is now bounded and only used where Mongo genuinely
-  cannot express the query.
-- The sentiment backfill made one HTTP request and one `save()` per review in a
-  sequential loop. It now batches through the AI service and uses `bulkWrite`.
-- No indexes existed for the queries the app actually issues; every listing page
-  was a full scan plus an in-memory sort.
-
-## Development
+## Phát triển
 
 ```bash
 npm install
-npm run start:dev     # watch mode, http://localhost:3001
-npm test              # unit tests
-npm run test:e2e      # needs a reachable MONGODB_URI
+npm run start:dev     # http://localhost:3001, tự reload
+npm run build && npm run start:prod
+npm test              # unit test
+npm run test:e2e      # cần MONGODB_URI truy cập được
 npm run typecheck
 npm run lint
 ```
+
+`scripts/dup-scan.js` (chỉ đọc) và `scripts/dedupe-restaurants.js` dùng để tìm và gộp các quán bị trùng `urlGoc`.
+
+## Bảo mật
+
+- Mật khẩu và refresh token được hash bằng bcrypt. Đăng nhập sai email hay sai mật khẩu đều trả cùng một lỗi 401,
+  nên không dò được email nào đã đăng ký.
+- `ValidationPipe` chạy với `whitelist` + `forbidNonWhitelisted`: trường lạ trong body bị từ chối, không lọt được vào
+  Mongoose.
+- Chuỗi tìm kiếm của người dùng được escape trước khi đưa vào `$regex`. `limit` bị giới hạn tối đa 100.
+- `helmet`, CORS theo danh sách cho phép, rate limit toàn cục 120 request/phút cộng giới hạn riêng cho từng route ở
+  trên.
