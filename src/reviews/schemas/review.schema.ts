@@ -18,7 +18,7 @@ export class Review {
   @Prop({ required: true })
   noiDung: string;
 
-  /** 'POS' | 'NEU' | 'NEG' (older rows may hold 'LABEL_0'..'LABEL_2'). */
+  /** 'POS' | 'NEU' | 'NEG' | 'MIX' (older rows may hold 'LABEL_0'..'LABEL_2'). */
   @Prop({ required: false, index: true })
   aiSentimentLabel?: string;
 
